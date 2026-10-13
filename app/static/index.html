@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ASN Blocker</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1d2330;--mut:#6b7280;--bd:#e3e6eb;--acc:#2563eb;--ban:#dc2626;--cap:#d97706;--ok:#16a34a}
+@media (prefers-color-scheme:dark){:root{--bg:#12151b;--card:#1b1f27;--fg:#e6e8ec;--mut:#9aa1ad;--bd:#2c323d;--acc:#5b8cff}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:14px 20px;border-bottom:1px solid var(--bd);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+h1{font-size:18px;margin:0}nav button{background:none;border:0;color:var(--mut);padding:8px 12px;font:inherit;cursor:pointer;border-bottom:2px solid transparent}
+nav button.on{color:var(--fg);border-color:var(--acc)}main{max-width:1000px;margin:auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:16px}
+input,select,textarea{font:inherit;padding:7px 9px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+button.b{font:inherit;padding:7px 12px;border-radius:6px;border:1px solid var(--bd);background:var(--card);color:var(--fg);cursor:pointer}
+button.p{background:var(--acc);border-color:var(--acc);color:#fff}button.ban{color:var(--ban)}button.cap{color:var(--cap)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd)}th{color:var(--mut);font-weight:500}
+.tag{padding:2px 8px;border-radius:10px;font-size:12px;color:#fff}.tag.ban{background:var(--ban)}.tag.captcha{background:var(--cap)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.mut{color:var(--mut)}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px}
+pre{background:var(--bg);padding:10px;border-radius:6px;max-height:360px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.hidden{display:none}textarea{width:100%;min-height:90px}
+</style></head><body>
+<header><h1>ASN Blocker</h1><nav>
+<button data-t="asn" class="on">ASNs</button><button data-t="vpn">VPN-Whitelist</button><button data-t="exc">Ausnahmen</button><button data-t="run">Status</button></nav></header>
+<main>
+<section id="asn">
+ <div class="card"><div class="row"><input id="q" placeholder="ASN oder Name suchen, z.B. hetzner oder AS16509" style="flex:1;min-width:220px"><button class="b p" id="qs">Suchen</button></div>
+ <table id="res" class="hidden"><thead><tr><th>ASN</th><th>Name</th><th></th></tr></thead><tbody></tbody></table></div>
+ <div class="card"><h3 style="margin-top:0">Ausgewählte ASNs</h3><table><thead><tr><th>ASN</th><th>Name</th><th>Aktion</th><th></th></tr></thead><tbody id="sel"></tbody></table></div>
+</section>
+<section id="vpn" class="hidden"><div class="card">
+ <div class="row"><select id="prov"></select><span class="mut" id="pnote"></span></div>
+ <p class="mut">Server-IPs der gewählten Länder werden aus allen Bans/Captchas herausgeschnitten.</p>
+ <input id="cf" placeholder="Länder filtern" style="margin-bottom:8px"><div class="grid" id="ctry"></div>
+ <p><button class="b p" id="vsave">Speichern</button> <span id="vmsg" class="mut"></span></p></div></section>
+<section id="exc" class="hidden"><div class="card">
+ <label>Ausnahme-ASNs (nie blockieren, z.B. 207137 PacketHub = NordVPN-Exit-IPs), eine pro Zeile</label><textarea id="easn"></textarea>
+ <label>Manuelle IPs/CIDRs, eine pro Zeile</label><textarea id="eman"></textarea>
+ <p><label><input type="checkbox" id="widen"> VPN-Server-IPs auf /24 (IPv6: /64) erweitern</label><br>
+ <label><input type="checkbox" id="v6"> IPv6-Prefixe ebenfalls blockieren</label></p>
+ <button class="b p" id="esave">Speichern</button> <span id="emsg" class="mut"></span></div></section>
+<section id="run" class="hidden"><div class="card">
+ <div id="stat"></div><p class="row"><button class="b" id="dry">Testlauf (ohne CrowdSec)</button><button class="b p" id="go">Jetzt anwenden</button>
+ <a href="api/ranges/ban">ban-Ranges</a> <a href="api/ranges/captcha">captcha-Ranges</a></p><pre id="log"></pre></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s),api=async(u,o={})=>{const r=await fetch(u,{headers:{'Content-Type':'application/json'},...o});if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.statusText);return r.json()};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let cfg,countries=[];
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x==b));document.querySelectorAll('main>section').forEach(s=>s.classList.toggle('hidden',s.id!=b.dataset.t));if(b.dataset.t=='run')status()});
+async function load(){cfg=await api('api/config');renderSel();$('#easn').value=cfg.exempt_asns.join('\n');$('#eman').value=cfg.manual_exempt.join('\n');$('#widen').checked=cfg.widen_vpn_ips;$('#v6').checked=cfg.include_ipv6}
+function renderSel(){$('#sel').innerHTML=cfg.asns.map(a=>`<tr><td>AS${a.asn}</td><td>${esc(a.name)}</td><td><select data-a="${a.asn}"><option value="ban"${a.action=='ban'?' selected':''}>Blockieren</option><option value="captcha"${a.action=='captcha'?' selected':''}>Captcha</option></select></td><td><button class="b" data-d="${a.asn}">Entfernen</button></td></tr>`).join('')||'<tr><td colspan=4 class="mut">Noch keine ASNs gewählt.</td></tr>';
+ $('#sel').querySelectorAll('select').forEach(s=>s.onchange=()=>{const a=cfg.asns.find(x=>x.asn==s.dataset.a);add(a.asn,a.name,s.value)});
+ $('#sel').querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{cfg=await api('api/asns/'+b.dataset.d,{method:'DELETE'});renderSel()})}
+async function add(asn,name,action){cfg=await api('api/asns',{method:'PUT',body:JSON.stringify({asn,name,action})});renderSel()}
+async function search(){const tb=$('#res tbody');$('#res').classList.remove('hidden');tb.innerHTML='<tr><td colspan=3 class="mut">Suche…</td></tr>';
+ try{const r=await api('api/asn/search?q='+encodeURIComponent($('#q').value));tb.innerHTML=r.map(a=>`<tr><td>AS${a.asn}</td><td>${esc(a.name)}</td><td class="row"><button class="b ban" data-x="ban">Blockieren</button><button class="b cap" data-x="captcha">Captcha</button></td></tr>`).join('')||'<tr><td colspan=3 class="mut">Nichts gefunden.</td></tr>';
+ tb.querySelectorAll('tr').forEach((tr,i)=>tr.querySelectorAll('[data-x]').forEach(b=>b.onclick=()=>add(r[i].asn,r[i].name,b.dataset.x)))}catch(e){tb.innerHTML=`<tr><td colspan=3>${esc(e.message)}</td></tr>`}}
+$('#qs').onclick=search;$('#q').onkeydown=e=>e.key=='Enter'&&search();
+async function loadProv(){const p=await api('api/vpn/providers');$('#prov').innerHTML=p.map(x=>`<option value="${x.id}" data-n="${esc(x.note)}">${esc(x.name)}</option>`).join('');$('#prov').onchange=loadCtry;loadCtry()}
+async function loadCtry(){const pv=$('#prov').value;$('#pnote').textContent=$('#prov').selectedOptions[0].dataset.n;$('#ctry').innerHTML='<span class="mut">Lade…</span>';
+ try{countries=await api(`api/vpn/${pv}/countries`)}catch(e){$('#ctry').textContent=e.message;return}renderCtry()}
+function renderCtry(){const pv=$('#prov').value,f=$('#cf').value.toLowerCase(),on=new Set(cfg.vpn_whitelist.filter(v=>v.provider==pv).map(v=>v.country));
+ $('#ctry').innerHTML=countries.filter(c=>!f||c.name.toLowerCase().includes(f)||c.code.toLowerCase()==f).map(c=>`<label><input type="checkbox" value="${c.code}"${on.has(c.code)?' checked':''}> ${esc(c.name)} (${c.code}${c.servers?', '+c.servers:''})</label>`).join('');
+ $('#ctry').querySelectorAll('input').forEach(i=>i.onchange=()=>{cfg.vpn_whitelist=cfg.vpn_whitelist.filter(v=>!(v.provider==pv&&v.country==i.value));if(i.checked)cfg.vpn_whitelist.push({provider:pv,country:i.value})})}
+$('#cf').oninput=renderCtry;
+$('#vsave').onclick=async()=>{const pv=$('#prov').value;cfg=await api('api/vpn/'+pv,{method:'PUT',body:JSON.stringify({countries:cfg.vpn_whitelist.filter(v=>v.provider==pv).map(v=>v.country)})});$('#vmsg').textContent='Gespeichert – greift beim nächsten Update.'};
+$('#esave').onclick=async()=>{const l=id=>$(id).value.split('\n').map(s=>s.trim()).filter(Boolean);try{cfg=await api('api/settings',{method:'PUT',body:JSON.stringify({exempt_asns:l('#easn').map(Number),manual_exempt:l('#eman'),widen_vpn_ips:$('#widen').checked,include_ipv6:$('#v6').checked})});$('#emsg').textContent='Gespeichert.'}catch(e){$('#emsg').textContent=e.message}};
+async function status(){const s=await api('api/status');const st=Object.entries(s.stats||{}).map(([k,v])=>`${k}: ${v.active}/${v.expected} aktiv`).join(' · ');
+ $('#stat').innerHTML=`<p>Container: <b>${esc(s.container)}</b> · Intervall: ${s.interval_hours} h<br>Letzter Lauf: ${s.last_run?new Date(s.last_run).toLocaleString()+(s.last_ok?' ✅':' ❌'):'–'} · Nächster: ${s.next_run?new Date(s.next_run).toLocaleString():'–'}<br>${st}${s.running?' <b>läuft…</b>':''}</p>`;
+ $('#log').textContent=(s.log||[]).join('\n');if(s.running)setTimeout(status,2000)}
+const run=dry=>api('api/run?dry_run='+dry,{method:'POST'}).then(()=>setTimeout(status,500)).catch(e=>alert(e.message));
+$('#dry').onclick=()=>run(true);$('#go').onclick=()=>confirm('Bestehende asn-blocker-Decisions werden ersetzt. Fortfahren?')&&run(false);
+load().then(loadProv);
+</script></body></html>
