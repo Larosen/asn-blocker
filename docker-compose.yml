@@ -1,0 +1,17 @@
+services:
+  asn-blocker:
+    image: ghcr.io/larosen/asn-blocker:latest
+    build: .
+    container_name: asn-blocker
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      CROWDSEC_CONTAINER: crowdsec      # Name des CrowdSec-Containers
+      UPDATE_INTERVAL_HOURS: "48"
+      DECISION_DURATION: 1095d
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: change-me         # leer = keine Anmeldung
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock   # fuer cscli via docker exec
