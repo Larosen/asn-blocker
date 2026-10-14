@@ -1,166 +1,276 @@
-"""Datenquellen: RIPEstat (ASN-Suche, Prefixe) und oeffentliche VPN-Serverlisten."""
+"""Externe Datenquellen: RIPEstat, bgp.tools (ASN-Namen), Spamhaus ASN-DROP, VPN-Serverlisten."""
+import csv
+import io
 import ipaddress
+import json
+import os
 import socket
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from .config import USER_AGENT
+from . import db
 
+USER_AGENT = os.environ.get("USER_AGENT", "asn-blocker (+https://github.com/larosen/asn-blocker)")
 RIPE = "https://stat.ripe.net/data"
+RIPE_APP = "asn-blocker"
+PREFIX_TTL = 6 * 3600
+PROVIDER_TTL = 3600
 
 
 class SourceError(RuntimeError):
     pass
 
 
-def _get(url: str, params: dict | None = None, timeout: float = 60):
+def http_get(url, params=None, timeout=60, as_text=False):
     last = None
     for _ in range(3):
         try:
-            r = httpx.get(url, params=params, timeout=timeout, headers={"User-Agent": USER_AGENT},
-                          follow_redirects=True)
+            r = httpx.get(url, params=params, timeout=timeout, follow_redirects=True,
+                          headers={"User-Agent": USER_AGENT})
             r.raise_for_status()
-            return r.json()
+            return r.text if as_text else r.json()
         except (httpx.HTTPError, ValueError) as e:
             last = e
     raise SourceError(f"{url}: {last}")
 
 
-# --- ASN ----------------------------------------------------------------------
+def _ripe(endpoint, resource, timeout=60):
+    return http_get(f"{RIPE}/{endpoint}/data.json", {"resource": resource, "sourceapp": RIPE_APP}, timeout).get("data", {})
 
-def search_asn(query: str) -> list[dict]:
+
+# --- ASN-Namen (lokal, fuer Suche) ---------------------------------------------------------
+
+def refresh_asn_names():
+    """bgp.tools/asns.csv (~5 MB) in SQLite laden. Spalten: asn,name,class,cc"""
+    text = http_get("https://bgp.tools/asns.csv", timeout=120, as_text=True)
+    rows = []
+    for r in csv.DictReader(io.StringIO(text)):
+        n = str(r.get("asn", "")).upper().removeprefix("AS")
+        if n.isdigit():
+            rows.append((int(n), r.get("name") or "", r.get("class") or "", r.get("cc") or ""))
+    if len(rows) < 10000:
+        raise SourceError(f"bgp.tools asns.csv unplausibel ({len(rows)} Zeilen)")
+    with db.tx() as c:
+        c.execute("DELETE FROM asn_names")
+        c.executemany("INSERT INTO asn_names VALUES(?,?,?,?)", rows)
+        db.put("asn_names_updated", __import__("time").time(), c)
+    return len(rows)
+
+
+def search_asn(query, limit=25):
     q = query.strip()
     if not q:
         return []
     digits = q.upper().removeprefix("AS")
+    have_local = db.q1("SELECT 1 AS x FROM asn_names LIMIT 1")
     if digits.isdigit():
-        return [asn_overview(int(digits))]
-    data = _get(f"{RIPE}/searchcomplete/data.json", {"resource": q}, timeout=20)
+        rows = db.q("SELECT asn,name,class,cc FROM asn_names WHERE asn=? OR CAST(asn AS TEXT) LIKE ? "
+                    "ORDER BY asn=? DESC, asn LIMIT ?", (int(digits), digits + "%", int(digits), limit))
+        if rows or have_local:
+            return rows
+        d = _ripe("as-overview", f"AS{digits}", 20)
+        return [{"asn": int(digits), "name": d.get("holder") or "", "class": "", "cc": ""}] if d.get("holder") else []
+    if have_local:
+        like = f"%{q}%"
+        return db.q("SELECT asn,name,class,cc FROM asn_names WHERE name LIKE ? "
+                    "ORDER BY name LIKE ? DESC, length(name), asn LIMIT ?", (like, q + "%", limit))
+    data = http_get(f"{RIPE}/searchcomplete/data.json", {"resource": q, "sourceapp": RIPE_APP}, 20)
     out = []
     for cat in data.get("data", {}).get("categories", []):
-        if cat.get("category") != "ASNs":
-            continue
-        for s in cat.get("suggestions", []):
-            val = str(s.get("value", "")).upper().removeprefix("AS")
-            if val.isdigit():
-                out.append({"asn": int(val), "name": s.get("description") or s.get("label") or ""})
+        if cat.get("category") == "ASNs":
+            for s in cat.get("suggestions", []):
+                v = str(s.get("value", "")).upper().removeprefix("AS")
+                if v.isdigit():
+                    out.append({"asn": int(v), "name": s.get("description") or s.get("label") or "", "class": "", "cc": ""})
+    return out[:limit]
+
+
+def asn_name(asn):
+    r = db.q1("SELECT name FROM asn_names WHERE asn=?", (asn,))
+    return r["name"] if r else ""
+
+
+# --- Prefixe ------------------------------------------------------------------------------------
+
+def asn_prefixes(asn, use_cache=True):
+    """Alle announced Prefixe (v4+v6) eines ASN, gecacht. Wirft SourceError bei ungueltiger Antwort."""
+    key = f"prefixes:{asn}"
+    if use_cache:
+        hit = db.cache_get(key, PREFIX_TTL)
+        if hit is not None:
+            return hit
+    prefixes = _ripe("announced-prefixes", f"AS{asn}").get("prefixes")
+    if prefixes is None:
+        raise SourceError(f"AS{asn}: ungueltige Antwort von RIPEstat")
+    out = sorted({p["prefix"] for p in prefixes})
+    db.cache_put(key, out)
     return out
 
 
-def asn_overview(asn: int) -> dict:
-    data = _get(f"{RIPE}/as-overview/data.json", {"resource": f"AS{asn}"}, timeout=20).get("data", {})
-    return {"asn": asn, "name": data.get("holder") or "", "announced": bool(data.get("announced"))}
+def prefixes_many(asns, use_cache=True):
+    """Parallel, max. 4 gleichzeitige Anfragen an RIPEstat."""
+    asns = list(asns)
+    with ThreadPoolExecutor(4) as ex:
+        return dict(zip(asns, ex.map(lambda a: asn_prefixes(a, use_cache), asns), strict=True))
 
 
-def asn_prefixes(asn: int, ipv6: bool = False) -> list[str]:
-    data = _get(f"{RIPE}/announced-prefixes/data.json", {"resource": f"AS{asn}"})
-    prefixes = data.get("data", {}).get("prefixes")
-    if prefixes is None:
-        raise SourceError(f"AS{asn}: ungueltige Antwort von RIPEstat")
-    return [p["prefix"] for p in prefixes if ipv6 or ":" not in p["prefix"]]
+def ip_info(ip):
+    key = f"ipinfo:{ip}"
+    hit = db.cache_get(key, 86400)
+    if hit is not None:
+        return hit
+    d = _ripe("network-info", ip, 20)
+    out = {"asns": [int(a) for a in d.get("asns", []) if str(a).isdigit()], "prefix": d.get("prefix")}
+    db.cache_put(key, out)
+    return out
 
 
-# --- VPN-Anbieter ---------------------------------------------------------------
-# Jeder Provider liefert countries() -> [{code, name, servers}] und ips(code) -> [ip]
-
-def _valid_ips(values) -> list[str]:
-    out = set()
-    for v in values:
+def spamhaus_asndrop():
+    """NDJSON: {"asn":..., "asname":..., "cc":...} je Zeile, letzte Zeile Metadaten."""
+    text = http_get("https://www.spamhaus.org/drop/asndrop.json", timeout=60, as_text=True)
+    out = []
+    for line in text.splitlines():
         try:
-            out.add(str(ipaddress.ip_address(str(v).strip())))
+            o = json.loads(line)
         except ValueError:
-            pass
-    return sorted(out)
+            continue
+        if isinstance(o.get("asn"), int):
+            out.append({"asn": o["asn"], "name": o.get("asname", ""), "cc": o.get("cc", "")})
+    if not out:
+        raise SourceError("Spamhaus ASN-DROP: leere Liste")
+    return out
 
 
-class NordVPN:
-    id, name = "nordvpn", "NordVPN"
-    note = "Offizielle API api.nordvpn.com (station + ips[])."
-    API = "https://api.nordvpn.com/v1"
+# --- VPN-Anbieter ---------------------------------------------------------------------------------
+# fetch() liefert [(country_code, country_name, ip_oder_hostname)]. IPs werden erst fuer die
+# ausgewaehlten Laender aufgeloest und auf oeffentliche Adressen gefiltert.
 
-    def _countries_raw(self):
-        return _get(f"{self.API}/servers/countries")
-
-    def countries(self):
-        return sorted(({"code": c["code"], "name": c["name"], "servers": c.get("serverCount")}
-                       for c in self._countries_raw()), key=lambda c: c["name"])
-
-    def ips(self, code):
-        cid = next((c["id"] for c in self._countries_raw() if c["code"] == code), None)
-        if cid is None:
-            raise SourceError(f"NordVPN: unbekanntes Land {code}")
-        servers = _get(f"{self.API}/servers", {"filters[country_id]": cid, "limit": 9999}, timeout=180)
-        if not isinstance(servers, list) or not servers:
-            raise SourceError(f"NordVPN: leere Serverliste fuer {code}")
-        vals = []
-        for s in servers:
-            vals.append(s.get("station"))
-            vals.extend((i.get("ip") or {}).get("ip") for i in s.get("ips") or [])
-        return _valid_ips(vals)
+def _public_ip(v):
+    try:
+        a = ipaddress.ip_address(str(v).strip())
+    except ValueError:
+        return None
+    return str(a) if a.is_global else None
 
 
-class Mullvad:
-    id, name = "mullvad", "Mullvad"
-    note = "Offizielle Relay-Liste api.mullvad.net/www/relays/all/."
-    URL = "https://api.mullvad.net/www/relays/all/"
+class Provider:
+    id = name = note = ""
+    exit_asn = None  # bekannter ASN der Exit-IPs, als Hinweis in der UI
 
-    def _relays(self):
-        data = _get(self.URL)
-        if not isinstance(data, list) or not data:
-            raise SourceError("Mullvad: leere Relay-Liste")
-        return data
+    def fetch(self):
+        raise NotImplementedError
+
+    def entries(self):
+        key = f"vpn:{self.id}"
+        hit = db.cache_get(key, PROVIDER_TTL)
+        if hit is None:
+            hit = [list(e) for e in self.fetch() if e[0] and e[2]]
+            if not hit:
+                raise SourceError(f"{self.name}: leere Serverliste")
+            db.cache_put(key, hit)
+        return hit
 
     def countries(self):
         acc = {}
-        for r in self._relays():
-            c = acc.setdefault(r["country_code"].upper(), {"code": r["country_code"].upper(),
-                                                           "name": r.get("country_name", ""), "servers": 0})
+        for cc, name, _ in self.entries():
+            c = acc.setdefault(cc.upper(), {"code": cc.upper(), "name": name, "servers": 0})
             c["servers"] += 1
         return sorted(acc.values(), key=lambda c: c["name"])
 
     def ips(self, code):
-        vals = []
-        for r in self._relays():
-            if r["country_code"].upper() == code:
-                vals += [r.get("ipv4_addr_in"), r.get("ipv6_addr_in")]
-        return _valid_ips(v for v in vals if v)
+        vals = [v for cc, _, v in self.entries() if cc.upper() == code]
+        hosts = [v for v in vals if _public_ip(v) is None and any(ch.isalpha() for ch in v)]
+        ips = {_public_ip(v) for v in vals} - {None}
+        if hosts:
+            with ThreadPoolExecutor(16) as ex:
+                for res in ex.map(_resolve, hosts):
+                    ips.update(filter(None, map(_public_ip, res)))
+        return sorted(ips)
 
 
-class Surfshark:
+def _resolve(host):
+    try:
+        return [i[4][0] for i in socket.getaddrinfo(host, None)]
+    except OSError:
+        return []
+
+
+class NordVPN(Provider):
+    id, name, exit_asn = "nordvpn", "NordVPN", 207137
+    note = "api.nordvpn.com – Einwahl-IPs; Exit-IPs liegen meist in AS207137 (PacketHub)."
+
+    def fetch(self):
+        servers = http_get("https://api.nordvpn.com/v1/servers", {"limit": 20000}, timeout=180)
+        out = []
+        for s in servers:
+            loc = (s.get("locations") or [{}])[0].get("country") or {}
+            cc, name = loc.get("code", ""), loc.get("name", "")
+            for v in [s.get("station")] + [(i.get("ip") or {}).get("ip") for i in s.get("ips") or []]:
+                if v:
+                    out.append((cc, name, v))
+        return out
+
+
+class Mullvad(Provider):
+    id, name = "mullvad", "Mullvad"
+    note = "api.mullvad.net/www/relays/all/"
+
+    def fetch(self):
+        return [(r.get("country_code", ""), r.get("country_name", ""), v)
+                for r in http_get("https://api.mullvad.net/www/relays/all/")
+                for v in (r.get("ipv4_addr_in"), r.get("ipv6_addr_in")) if v]
+
+
+class Surfshark(Provider):
     id, name = "surfshark", "Surfshark"
-    note = "Offizielle Cluster-Liste; IPs werden per DNS der Server-Hostnamen aufgeloest."
-    URL = "https://api.surfshark.com/v4/server/clusters/generic"
+    note = "api.surfshark.com – nur Hostnamen, IPs per DNS aufgelöst."
 
-    def _clusters(self):
-        data = _get(self.URL)
-        if not isinstance(data, list) or not data:
-            raise SourceError("Surfshark: leere Cluster-Liste")
-        return data
-
-    def countries(self):
-        acc = {}
-        for c in self._clusters():
-            e = acc.setdefault(c["countryCode"].upper(), {"code": c["countryCode"].upper(),
-                                                          "name": c.get("country", ""), "servers": 0})
-            e["servers"] += 1
-        return sorted(acc.values(), key=lambda c: c["name"])
-
-    def ips(self, code):
-        hosts = [c["connectionName"] for c in self._clusters()
-                 if c["countryCode"].upper() == code and c.get("connectionName")]
-
-        def resolve(h):
-            try:
-                return [i[4][0] for i in socket.getaddrinfo(h, None)]
-            except OSError:
-                return []
-
-        with ThreadPoolExecutor(16) as ex:
-            ips = _valid_ips(ip for res in ex.map(resolve, hosts) for ip in res)
-        if hosts and not ips:
-            raise SourceError(f"Surfshark: keine DNS-Aufloesung fuer {code}")
-        return ips
+    def fetch(self):
+        return [(c.get("countryCode", ""), c.get("country", ""), c.get("connectionName"))
+                for c in http_get("https://api.surfshark.com/v4/server/clusters/generic")]
 
 
-PROVIDERS = {p.id: p for p in (NordVPN(), Mullvad(), Surfshark())}
+class IVPN(Provider):
+    id, name = "ivpn", "IVPN"
+    note = "api.ivpn.net/v5/servers.json"
+
+    def fetch(self):
+        data = http_get("https://api.ivpn.net/v5/servers.json")
+        out = []
+        for proto in ("wireguard", "openvpn"):
+            for g in data.get(proto, []):
+                for h in g.get("hosts", []):
+                    out.append((g.get("country_code", ""), g.get("country", ""), h.get("host")))
+        return out
+
+
+class PIA(Provider):
+    id, name = "pia", "Private Internet Access"
+    note = "serverlist.piaservers.net (JSON + Signatur)"
+
+    def fetch(self):
+        text = http_get("https://serverlist.piaservers.net/vpninfo/servers/v6", as_text=True)
+        data = json.loads(text.split("\n", 1)[0])
+        out = []
+        for r in data.get("regions", []):
+            for group in (r.get("servers") or {}).values():
+                for s in group:
+                    out.append((r.get("country", ""), r.get("name", ""), s.get("ip")))
+        return out
+
+
+class AirVPN(Provider):
+    id, name = "airvpn", "AirVPN"
+    note = "airvpn.org/api/status/"
+
+    def fetch(self):
+        out = []
+        for s in http_get("https://airvpn.org/api/status/").get("servers", []):
+            for k, v in s.items():
+                if k.startswith(("ip_v4_in", "ip_v6_in")) and v:
+                    out.append((s.get("country_code", ""), s.get("country_name", ""), v))
+        return out
+
+
+PROVIDERS = {p.id: p for p in (NordVPN(), Mullvad(), Surfshark(), IVPN(), PIA(), AirVPN())}

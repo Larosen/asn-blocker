@@ -1,3 +1,8 @@
 data
 .git
+.github
 __pycache__
+tests
+*.md
+.pytest_cache
+.ruff_cache

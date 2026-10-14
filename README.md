@@ -1,48 +1,106 @@
 # asn-blocker
 
-Weboberfläche für CrowdSec, mit der man ganze ASNs **blockieren** oder mit einem **Captcha** versehen kann.
-Ausnahmen für Server-Regionen von VPN-Anbietern lassen sich per Klick festlegen.
-Ist die Weiterentwicklung des Skripts `asn-to-range-ban.sh`.
+Web-Oberfläche für [CrowdSec](https://crowdsec.net), mit der man ganze Netze (ASNs) **blockiert** oder mit einem **Captcha** versieht –
+mit Ausnahmen für die Server-Standorte von VPN-Anbietern. Ein Container, ein Volume, alles Weitere wird in der Oberfläche eingerichtet.
 
-## Funktionen
+## Was es tut
 
-- **ASNs**: Suche nach Nummer oder Name (RIPEstat), Aktion pro ASN: `ban` oder `captcha`.
-- **Automatisches Update**: Ein Scheduler im Container holt die announced Prefixe alle
-  `UPDATE_INTERVAL_HOURS` (Standard 48 h) neu und ersetzt die Decisions. Nach einem Fehler gibt es einen neuen Versuch nach 1 h.
-- **VPN-Whitelist**: Länder pro Anbieter auswählen. Deren Server-IPs (optional auf /24 bzw. /64 erweitert)
-  werden aus allen Ranges herausgeschnitten. Unterstützt werden Anbieter, die ihre Serverliste öffentlich anbieten:
-  | Anbieter | Quelle |
-  |---|---|
-  | NordVPN | `api.nordvpn.com/v1/servers` |
-  | Mullvad | `api.mullvad.net/www/relays/all/` |
-  | Surfshark | `api.surfshark.com/v4/server/clusters/generic` + DNS |
-- **Weitere Ausnahmen**: Ausnahme-ASNs (z. B. `207137` PacketHub für die NordVPN-Exit-IPs) und einzelne IPs/CIDRs.
-- **Sicherheit wie im Original-Skript**: Alte Decisions werden erst gelöscht, wenn *alle* Quellen gültige Daten geliefert haben.
-  Danach wird geprüft, ob die Anzahl übereinstimmt. Ein Testlauf ist ohne Änderungen an CrowdSec möglich.
+1. Du wählst ASNs aus (Suche nach Nummer oder Name) und legst pro ASN *Blockieren* oder *Captcha* fest.
+2. asn-blocker holt die aktuell announcten Prefixe (RIPEstat), schneidet alle Ausnahmen heraus und gleicht das Ergebnis
+   mit CrowdSec ab. Das passiert automatisch alle 48 h (einstellbar).
+3. Ausnahmen:
+   - **VPN-Anbieter** pro Land: NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN (jeweils deren öffentliche Serverliste)
+   - **Ausnahme-ASNs**, z. B. `AS207137` (Exit-IPs von NordVPN)
+   - **einzelne IPs/CIDRs**
+4. Optional: die [Spamhaus ASN-DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/)-Liste automatisch übernehmen.
 
-Ban- und Captcha-Decisions bekommen eigene Reasons (`asn-blocker ban` / `asn-blocker captcha`).
-Captcha braucht einen Bouncer, der das unterstützt (z. B. das Traefik-Plugin mit Captcha-Konfiguration).
-Die nftables/iptables-Firewall-Bouncer behandeln `captcha` **nicht**.
+### Sicherheitsnetz
 
-## Start
+- **Diff-Sync statt Löschen und Neuimport:** Neue Ranges werden zuerst angelegt, entfallene danach gelöscht. Es gibt keine Lücke ohne Schutz.
+- **Erst prüfen, dann schreiben:** Liefert eine Quelle keine gültigen Daten, bleibt CrowdSec unverändert.
+- **Plausibilitätsgrenze:** Ändert sich die Anzahl der Ranges um mehr als 30 % (einstellbar), hält der Lauf an und wartet auf Bestätigung.
+- **Ablauf statt Ewigkeit:** Sperren gelten standardmäßig 7 Tage und werden vor Ablauf erneuert. Fällt asn-blocker aus, laufen sie aus statt jahrelang veraltet zu bleiben.
+- **Wächter-IPs:** z. B. deine Mobilfunk-IP. Nach jedem Lauf geprüft; wäre eine betroffen, wirst du benachrichtigt (ntfy, Gotify oder Webhook).
+- **Aussperr-Warnung:** Liegt deine eigene IP in einer gesperrten Range, zeigt die Oberfläche das mit einem Ein-Klick-Fix.
+- **IP-Prüfer:** Für jede IP: Welcher ASN, welche Regel, welche Ausnahme greift.
 
-```bash
-docker compose up -d   # danach http://127.0.0.1:8080
+## Schnellstart
+
+```yaml
+# docker-compose.yml
+services:
+  asn-blocker:
+    image: ghcr.io/larosen/asn-blocker:latest
+    restart: unless-stopped
+    volumes: [asn-blocker-data:/data]
+    networks: [crowdsec]          # Netz, in dem CrowdSec erreichbar ist
+volumes:
+  asn-blocker-data:
+networks:
+  crowdsec: { external: true }
 ```
 
-Der Container führt `cscli` per `docker exec` im CrowdSec-Container aus. Dafür ist `/var/run/docker.sock` gemountet.
-Wer Zugriff auf den Socket hat, hat faktisch Root-Rechte auf dem Host. Die Oberfläche deshalb nicht öffentlich erreichbar machen und `ADMIN_PASSWORD` setzen.
+```bash
+docker compose up -d
+docker logs asn-blocker            # enthält das Setup-Token
+```
 
-| Variable | Standard | |
-|---|---|---|
-| `CROWDSEC_CONTAINER` | `crowdsec` | Name des CrowdSec-Containers |
-| `UPDATE_INTERVAL_HOURS` | `48` | Update-Intervall |
-| `DECISION_DURATION` | `1095d` | Dauer der Decisions |
-| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / leer | Basic Auth (leer = aus) |
+1. Oberfläche aufrufen (über den Reverse Proxy, siehe unten), Setup-Token eingeben und die Anmeldung wählen.
+2. Einmalig im CrowdSec-Container einen Zugang anlegen und das ausgegebene Passwort in der Oberfläche eintragen:
+   ```bash
+   docker exec crowdsec cscli machines add asn-blocker --auto -f -
+   ```
+3. ASNs auswählen → **Anwenden**.
 
-Die Konfiguration liegt in `/data/config.json` und lässt sich auch von Hand bearbeiten.
+Das war's. Kein Docker-Socket, keine Umgebungsvariablen.
 
-## Image
+### Hinter Pangolin (oder einem anderen Reverse Proxy mit SSO)
 
-Die GitHub Action `.github/workflows/docker.yml` baut bei Pushes auf `main` und bei Tags `v*` ein Image für amd64 und arm64
-und veröffentlicht es als `ghcr.io/larosen/asn-blocker`.
+- Den Container **nicht** mit `ports:` veröffentlichen, sondern ins Docker-Netz des Proxys hängen (bei Pangolin: das Netz von Newt bzw. Traefik).
+- In Pangolin eine Ressource auf `http://asn-blocker:8080` mit aktivierter Authentifizierung anlegen.
+- Bei der Ersteinrichtung **„Reverse Proxy mit SSO“** wählen:
+  - *Vertrauenswürdige Proxy-IPs*: die IP/das Netz des Proxy-Containers (wird vorausgefüllt).
+  - *Header mit Benutzername*: der Header, den der Proxy nach dem Login setzt (Standard `Remote-User`).
+  Die Einrichtung prüft, dass die aktuelle Anfrage diese Bedingungen erfüllt – du kannst dich so nicht versehentlich aussperren.
+- Ohne SSO-Proxy: **„Eigener Login“** wählen (Passwort, Session-Cookie, Login-Drosselung).
+
+Die App erwartet, dass TLS am Proxy endet. Identity-Header und `X-Forwarded-For` werden nur von den eingetragenen Proxy-IPs akzeptiert.
+
+Zugang verloren? `docker exec asn-blocker python -m app.cli reset-auth`, Container neu starten, neues Token aus dem Log.
+
+### Captcha
+
+Captcha-Decisions wirken nur mit einem Bouncer, der Captchas ausliefern kann – z. B. dem
+[Traefik-Bouncer-Plugin](https://plugins.traefik.io/plugins/6335346ca4caa9ddeffda116/crowdsec-bouncer-traefik-plugin) mit Captcha-Konfiguration.
+Firewall-Bouncer (nftables/iptables) **ignorieren** Captcha-Decisions.
+
+### Umstieg vom Bash-Skript `asn-to-range-ban.sh`
+
+1. ASNs → **Liste einfügen** → den Inhalt von `ASN_LIST=( … )` einfügen. Kommentare werden als Notiz übernommen, auskommentierte Zeilen übersprungen.
+2. `EXEMPT_COUNTRIES` unter *VPN-Ausnahmen → NordVPN* anhaken, `EXEMPT_ASNS` und `MANUAL_EXEMPT` unter *Ausnahmen* eintragen, `TEST_IPS` als *Wächter-IPs*.
+3. Anwenden. Danach unter *Einstellungen → Wartung* die alten Decisions (`Auto-Block via ASN Bulk`) entfernen und den Cronjob des Skripts löschen.
+
+## Betrieb
+
+| | |
+|---|---|
+| Daten | `/data/asn-blocker.db` (SQLite) – Regeln, Läufe, Protokoll, Caches, CrowdSec-Zugang |
+| Prozess | ein Uvicorn-Worker, Scheduler im selben Prozess |
+| Benutzer | UID 10001, läuft mit `read_only`, `cap_drop: ALL`, `no-new-privileges` |
+| Healthcheck | `GET /healthz` (im Image eingebaut) |
+| Externe Quellen | stat.ripe.net, bgp.tools (ASN-Namensliste, wöchentlich), Anbieter-APIs, optional spamhaus.org |
+
+**Legacy-Modus Docker-Socket:** In den Einstellungen kann statt der LAPI `cscli` per `docker exec` genutzt werden. Dafür muss
+`/var/run/docker.sock` eingebunden und der Container mit einer Gruppe gestartet werden, die darauf zugreifen darf.
+Wer dann die Oberfläche übernimmt, hat Root auf dem Host – nur verwenden, wenn die LAPI nicht erreichbar ist.
+
+## Entwicklung
+
+```bash
+pip install -r requirements-dev.txt
+ruff check app tests && pytest -q
+DATA_DIR=./data uvicorn app.main:app --reload --port 8080
+```
+
+Integrationstest gegen eine echte LAPI: `CROWDSEC_LAPI_URL`, `CROWDSEC_MACHINE_ID`, `CROWDSEC_PASSWORD` setzen, dann `pytest tests/test_lapi_integration.py`.
+Das Frontend ist reines HTML/CSS/JS ohne Build-Schritt (`app/static`).
