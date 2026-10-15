@@ -17,7 +17,7 @@ from . import auth, crowdsec, db, engine, notify, sources
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 
 @asynccontextmanager

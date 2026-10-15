@@ -13,13 +13,40 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - run: pip install -r requirements-dev.txt
       - run: ruff check app tests
       - run: pytest -q
 
+  # Integrationstest gegen eine echte CrowdSec-LAPI (aktuelles Release)
+  lapi:
+    runs-on: ubuntu-latest
+    env:
+      CROWDSEC_IMAGE: crowdsecurity/crowdsec:v1.8.1@sha256:0f2523fa61ef507f15d953045cface490cc880670c62f2755ced17524107f71a
+      CROWDSEC_LAPI_URL: http://127.0.0.1:8080
+      CROWDSEC_MACHINE_ID: asn-blocker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements-dev.txt
+      - name: CrowdSec starten
+        run: |
+          docker run -d --name crowdsec -p 127.0.0.1:8080:8080 -v cs-data:/var/lib/crowdsec/data \
+            -e DISABLE_ONLINE_API=true "$CROWDSEC_IMAGE"
+          for i in $(seq 1 60); do docker exec crowdsec cscli lapi status >/dev/null 2>&1 && break; sleep 2; done
+          docker exec crowdsec cscli version
+          echo "CROWDSEC_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+      - name: Machine anlegen
+        run: docker exec crowdsec cscli machines add "$CROWDSEC_MACHINE_ID" --password "$CROWDSEC_PASSWORD" -f /dev/null
+      - name: Integrationstest (darf nicht übersprungen werden)
+        run: pytest -q -rs tests/test_lapi_integration.py | tee out.txt && grep -q "1 passed" out.txt
+      - if: failure()
+        run: docker logs crowdsec | tail -50
+
   image:
-    needs: test
+    needs: [test, lapi]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -67,7 +94,7 @@ jobs:
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: >
           docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD
-          aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08
+          aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
           image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
           "${IMAGE}@${{ steps.build.outputs.digest }}"
       # Attestations gibt es fuer private Repos persoenlicher Accounts nicht; die

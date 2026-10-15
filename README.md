@@ -94,6 +94,11 @@ Firewall-Bouncer (nftables/iptables) **ignorieren** Captcha-Decisions.
 `/var/run/docker.sock` eingebunden und der Container mit einer Gruppe gestartet werden, die darauf zugreifen darf.
 Wer dann die Oberfläche übernimmt, hat Root auf dem Host – nur verwenden, wenn die LAPI nicht erreichbar ist.
 
+## Kompatibilität
+
+Getestet gegen CrowdSec **1.8.1** und **1.8.2-rc1** (sowie 1.6.8); die CI prüft jeden Push gegen einen echten CrowdSec-1.8.1-Container.
+Das Image basiert auf Python 3.14.
+
 ## Entwicklung
 
 ```bash

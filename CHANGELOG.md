@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+- Getestet gegen CrowdSec 1.8.1 und 1.8.2-rc1; neuer CI-Job mit echter CrowdSec-1.8.1-LAPI
+- Python 3.14 (Basis-Image per Digest gepinnt), Trivy 0.73.0
+- pip aus dem Laufzeit-Image entfernt (veraltete Pakete in `pip/_vendor` lösten Trivy-Funde aus)
+- Fehlerbehandlung, wenn die LAPI nicht erreichbar ist (vorher HTTP 500 bei „Verbindung testen“)
+- Abhängigkeiten aktualisiert (fastapi 0.143, starlette 1.8, Actions)
+
 ## 0.2.0
 - CrowdSec-Anbindung über die Local API (kein Docker-Socket mehr nötig), Docker-Socket als Legacy-Modus
 - Diff-Sync: neue Ranges zuerst, entfallene danach – keine Lücke ohne Schutz; Erneuerung vor Ablauf
