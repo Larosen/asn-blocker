@@ -101,3 +101,15 @@ def test_crowdsec_unreachable_is_422_not_500(client):
     setup_local(client)
     r = client.put("/api/crowdsec", headers=H, json={"mode": "lapi", "lapi_url": "http://127.0.0.1:1", "machine_id": "m", "password": "p"})
     assert r.status_code == 422 and "nicht erreichbar" in r.json()["detail"]
+
+
+def test_bulk_delete(client):
+    setup_local(client)
+    client.put("/api/asns", headers=H, json=[{"asn": a, "action": "ban"} for a in (1, 2, 3)])
+    assert client.post("/api/asns/delete", headers=H, json={"asns": [1, 3]}).status_code == 200
+    assert [r["asn"] for r in client.get("/api/asns").json()] == [2]
+
+
+def test_static_i18n_served_with_csp(client):
+    r = client.get("/static/i18n.js")
+    assert r.status_code == 200 and "export function t" in r.text

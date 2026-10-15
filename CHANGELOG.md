@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+- Oberfläche auf Deutsch und Englisch (automatisch nach Browsersprache, umschaltbar)
+- ASN-Tabelle: Mehrfachauswahl mit Massenaktionen (Blockieren, Captcha, Entfernen)
+- Apply-Leiste zeigt vor dem Anwenden die erwartete Änderung (+/− Ranges je Aktion)
+- VPN-Länder nach Kontinent gruppiert, „alle/keine“ je Kontinent
+- Logging über `logging`, optional als JSON (`LOG_FORMAT=json`)
+- Barrierefreiheit: axe-core (WCAG 2.1 AA) ohne Befund in hellem und dunklem Modus; Kontraste angepasst,
+  Screenreader-Beschriftungen, `aria-current`, Live-Regionen
+
 ## 0.2.1
 - Getestet gegen CrowdSec 1.8.1 und 1.8.2-rc1; neuer CI-Job mit echter CrowdSec-1.8.1-LAPI
 - Python 3.14 (Basis-Image per Digest gepinnt), Trivy 0.73.0

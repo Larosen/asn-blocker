@@ -6,15 +6,16 @@ Es gibt also keine Luecke ohne Schutz; jeder Fehler vor dem Schreiben laesst Cro
 """
 import ipaddress
 import json
+import logging
 import threading
 import time
-import traceback
 from collections import defaultdict
 
 from . import crowdsec, db, netset, notify, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
 _lock = threading.Lock()
+log_ = logging.getLogger("asn_blocker.engine")
 
 
 class Busy(RuntimeError):
@@ -70,7 +71,7 @@ def build(log, fresh=True):
     log("ASN-Ranges sammeln")
     asn_rules = rules()
     if db.get("spamhaus_asndrop"):
-        drop = sources.spamhaus_asndrop()
+        drop = sources.spamhaus_asndrop(use_cache=not fresh)
         added = 0
         for d in drop:
             if d["asn"] not in asn_rules:
@@ -154,7 +155,7 @@ def run(kind, user, force=False):
 
         def log(msg):
             line = f"{time.strftime('%H:%M:%S')} {msg}"
-            print(f"[run {run_id}] {msg}", flush=True)
+            log_.info(msg, extra={"run_id": run_id})
             lines.append(line)
             with db.tx() as c:
                 c.execute("UPDATE runs SET log=? WHERE id=?", ("\n".join(lines), run_id))
@@ -234,7 +235,7 @@ def run(kind, user, force=False):
                 notify.send("asn-blocker: Lauf fehlgeschlagen", str(e))
         except Exception as e:  # noqa: BLE001
             log(f"FEHLER (unerwartet): {e!r}")
-            traceback.print_exc()
+            log_.exception("Unerwarteter Fehler im Lauf %s", run_id)
             if kind == "apply":
                 notify.send("asn-blocker: Lauf fehlgeschlagen", repr(e))
         with db.tx() as c:
@@ -246,6 +247,33 @@ def run(kind, user, force=False):
         return run_id
     finally:
         _lock.release()
+
+
+_preview = {"rev": None, "result": None}
+_preview_lock = threading.Lock()
+
+
+def preview():
+    """Schnelle Vorschau fuer die Apply-Leiste: Soll (aus Caches) gegen zuletzt angewendeten Stand."""
+    rev = db.get("config_rev")
+    if _preview["rev"] == rev:
+        return _preview["result"]
+    if not _preview_lock.acquire(blocking=False):
+        return {"busy": True}
+    try:
+        try:
+            desired, _ = build(lambda _msg: None, fresh=False)
+        except sources.SourceError as e:
+            return {"error": str(e)}
+        result = {"rev": rev}
+        for t in REASONS:
+            applied = {r["value"] for r in db.q("SELECT value FROM applied WHERE type=?", (t,))}
+            want = set(desired[t])
+            result[t] = {"total": len(want), "add": len(want - applied), "remove": len(applied - want)}
+        _preview.update(rev=rev, result=result)
+        return result
+    finally:
+        _preview_lock.release()
 
 
 def is_running():
@@ -304,12 +332,12 @@ def scheduler():
             if time.time() - updated > 7 * 86400:
                 try:
                     n = sources.refresh_asn_names()
-                    print(f"ASN-Namensliste aktualisiert: {n} Einträge", flush=True)
+                    log_.info("ASN-Namensliste aktualisiert: %d Einträge", n)
                 except sources.SourceError as e:
-                    print(f"ASN-Namensliste: {e}", flush=True)
+                    log_.warning("ASN-Namensliste: %s", e)
                     db.put("asn_names_updated", time.time() - 6 * 86400)  # in 1 Tag erneut
         except Busy:
             pass
         except Exception:  # noqa: BLE001
-            traceback.print_exc()
+            log_.exception("Scheduler-Fehler")
         time.sleep(30)

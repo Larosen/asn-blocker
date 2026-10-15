@@ -6,6 +6,7 @@ import json
 import os
 import socket
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import httpx
 
@@ -16,6 +17,7 @@ RIPE = "https://stat.ripe.net/data"
 RIPE_APP = "asn-blocker"
 PREFIX_TTL = 6 * 3600
 PROVIDER_TTL = 3600
+CONTINENTS = json.loads((Path(__file__).parent / "data" / "continents.json").read_text())
 
 
 class SourceError(RuntimeError):
@@ -126,8 +128,12 @@ def ip_info(ip):
     return out
 
 
-def spamhaus_asndrop():
+def spamhaus_asndrop(use_cache=True):
     """NDJSON: {"asn":..., "asname":..., "cc":...} je Zeile, letzte Zeile Metadaten."""
+    if use_cache:
+        hit = db.cache_get("spamhaus_asndrop", PREFIX_TTL)
+        if hit is not None:
+            return hit
     text = http_get("https://www.spamhaus.org/drop/asndrop.json", timeout=60, as_text=True)
     out = []
     for line in text.splitlines():
@@ -139,6 +145,7 @@ def spamhaus_asndrop():
             out.append({"asn": o["asn"], "name": o.get("asname", ""), "cc": o.get("cc", "")})
     if not out:
         raise SourceError("Spamhaus ASN-DROP: leere Liste")
+    db.cache_put("spamhaus_asndrop", out)
     return out
 
 
@@ -174,7 +181,8 @@ class Provider:
     def countries(self):
         acc = {}
         for cc, name, _ in self.entries():
-            c = acc.setdefault(cc.upper(), {"code": cc.upper(), "name": name, "servers": 0})
+            c = acc.setdefault(cc.upper(), {"code": cc.upper(), "name": name, "servers": 0,
+                                            "continent": CONTINENTS.get(cc.upper(), "")})
             c["servers"] += 1
         return sorted(acc.values(), key=lambda c: c["name"])
 
