@@ -1,0 +1,24 @@
+name: sources
+# Prueft alle externen Datenquellen (RIPEstat, bgp.tools, Spamhaus, VPN-Anbieter) live,
+# damit Format- oder API-Aenderungen auffallen, bevor ein Lauf in Produktion scheitert.
+on:
+  pull_request:
+    paths: ["app/sources.py", "app/cli.py", "app/data/**", ".github/workflows/sources.yml"]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements.txt
+      - name: Quellen live pruefen
+        env:
+          DATA_DIR: ${{ runner.temp }}/asnb
+        run: python -m app.cli check-sources
