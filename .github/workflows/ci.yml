@@ -70,8 +70,10 @@ jobs:
           aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08
           image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
           "${IMAGE}@${{ steps.build.outputs.digest }}"
+      # Attestations gibt es fuer private Repos persoenlicher Accounts nicht; die
+      # SLSA-Provenance haengt per buildx (provenance: mode=max) trotzdem am Image.
       - uses: actions/attest-build-provenance@7668571508540a607bdfd90a87a560489fe372eb # v2.1.0
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !github.event.repository.private
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
