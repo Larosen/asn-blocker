@@ -3,4 +3,4 @@ starlette==1.8.0
 pydantic==2.14.1
 uvicorn==0.54.0
 httpx==0.28.1
-docker==7.1.0
+docker==7.2.0
