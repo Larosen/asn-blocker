@@ -88,6 +88,8 @@ Firewall-Bouncer (nftables/iptables) **ignorieren** Captcha-Decisions.
 | Prozess | ein Uvicorn-Worker, Scheduler im selben Prozess |
 | Benutzer | UID 10001, läuft mit `read_only`, `cap_drop: ALL`, `no-new-privileges` |
 | Healthcheck | `GET /healthz` (im Image eingebaut) |
+| Logs | stdout, lesbarer Text; `LOG_FORMAT=json` für JSON (z. B. Loki), `LOG_LEVEL=DEBUG` für mehr Details |
+| Sprache | Oberfläche Deutsch/Englisch, automatisch nach Browser, umschaltbar unten links |
 | Externe Quellen | stat.ripe.net, bgp.tools (ASN-Namensliste, wöchentlich), Anbieter-APIs, optional spamhaus.org |
 
 **Legacy-Modus Docker-Socket:** In den Einstellungen kann statt der LAPI `cscli` per `docker exec` genutzt werden. Dafür muss

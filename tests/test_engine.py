@@ -142,3 +142,40 @@ def test_go_duration():
 def test_unreachable_lapi_raises_crowdsec_error():
     with pytest.raises(crowdsec.CrowdSecError, match="nicht erreichbar"):
         crowdsec.Lapi("http://127.0.0.1:1", "m", "p").test()
+
+
+def test_preview_counts_against_applied(env):
+    p = engine.preview()
+    assert p["ban"]["add"] == p["ban"]["total"] > 0 and p["ban"]["remove"] == 0
+    engine.run("apply", "test")
+    db.bump_rev(db.conn())
+    p = engine.preview()
+    assert p["ban"]["add"] == 0 and p["ban"]["remove"] == 0
+    before = list(env.decisions)
+    with db.tx() as c:
+        c.execute("DELETE FROM asn_rules WHERE asn=2")
+        db.bump_rev(c)
+    p = engine.preview()
+    assert p["captcha"]["total"] == 0 and p["captcha"]["remove"] > 0
+    assert env.decisions == before  # Vorschau schreibt nichts nach CrowdSec
+
+
+def test_countries_have_continent(env):
+    cs = {c["code"]: c for c in sources.PROVIDERS["nordvpn"].countries()}
+    assert cs["DE"]["continent"] == "EU" and cs["NO"]["continent"] == "EU"
+
+
+def test_json_logging(capsys, monkeypatch):
+    import json
+    import logging
+
+    from app import logs
+
+    monkeypatch.setenv("LOG_FORMAT", "json")
+    logs.setup()
+    logging.getLogger("asn_blocker.test").info("hallo %s", "welt", extra={"run_id": 7})
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    data = json.loads(line)
+    assert data["msg"] == "hallo welt" and data["run_id"] == 7 and data["level"] == "info"
+    monkeypatch.setenv("LOG_FORMAT", "text")
+    logs.setup()

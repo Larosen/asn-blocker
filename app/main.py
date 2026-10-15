@@ -13,11 +13,14 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth, crowdsec, db, engine, notify, sources
+from . import auth, crowdsec, db, engine, logs, notify, sources
+
+logs.setup()
+log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 
 @asynccontextmanager
@@ -26,7 +29,7 @@ async def lifespan(_app):
     with db.tx() as c:
         c.execute("UPDATE runs SET status='failed', finished_at=? WHERE status='running'", (time.time(),))
     if not db.get("auth_mode"):
-        print("=" * 60 + f"\nErsteinrichtung: Setup-Token = {auth.SETUP_TOKEN}\n" + "=" * 60, flush=True)
+        log.warning("Ersteinrichtung: Setup-Token = %s", auth.SETUP_TOKEN)
     threading.Thread(target=engine.scheduler, daemon=True, name="scheduler").start()
     yield
 
@@ -288,6 +291,19 @@ def delete_asn(asn: int, user: str = Depends(require_user)):
         c.execute("DELETE FROM asn_rules WHERE asn=?", (asn,))
         db.bump_rev(c)
     db.audit(user, "asn.delete", {"asn": asn})
+    return {"ok": True}
+
+
+class AsnDelete(BaseModel):
+    asns: list[int] = Field(max_length=5000)
+
+
+@api.post("/asns/delete")
+def delete_asns(body: AsnDelete, user: str = Depends(require_user)):
+    with db.tx() as c:
+        c.executemany("DELETE FROM asn_rules WHERE asn=?", [(a,) for a in body.asns])
+        db.bump_rev(c)
+    db.audit(user, "asn.delete", {"asns": body.asns})
     return {"ok": True}
 
 
@@ -565,6 +581,11 @@ def start_run(body: RunReq, user: str = Depends(require_user)):
     if body.kind == "apply":
         db.audit(user, "run.apply", {"force": body.force})
     return {"ok": True}
+
+
+@api.get("/preview")
+def get_preview():
+    return engine.preview()
 
 
 @api.get("/runs")

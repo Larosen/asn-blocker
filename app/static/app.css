@@ -2,7 +2,7 @@
   --bg: #fafafa; --panel: #ffffff; --sunken: #f4f4f5; --line: #e4e4e7; --line-strong: #d4d4d8;
   --fg: #18181b; --fg-2: #52525b; --fg-3: #71717a;
   --accent: #18181b; --accent-fg: #fafafa;
-  --ban: #dc2626; --ban-bg: #fef2f2; --cap: #b45309; --cap-bg: #fffbeb; --ok: #15803d; --ok-bg: #f0fdf4;
+  --ban: #c42020; --ban-bg: #fef2f2; --cap: #b45309; --cap-bg: #fffbeb; --ok: #15803d; --ok-bg: #f0fdf4;
   --focus: #2563eb;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -11,7 +11,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0c0c0e; --panel: #141417; --sunken: #1b1b1f; --line: #26262b; --line-strong: #34343a;
-    --fg: #ececee; --fg-2: #a1a1aa; --fg-3: #80808a;
+    --fg: #ececee; --fg-2: #a1a1aa; --fg-3: #8f8f99;
     --accent: #ececee; --accent-fg: #0c0c0e;
     --ban: #f87171; --ban-bg: #2a1414; --cap: #fbbf24; --cap-bg: #2a2110; --ok: #4ade80; --ok-bg: #0f2417;
     --focus: #60a5fa;
@@ -173,3 +173,23 @@ h3 { margin: 16px 0 6px; } h3:first-child { margin-top: 0; } .mt { margin-top: 1
 #ctools { border-bottom: 1px solid var(--line); }
 tr[aria-selected="true"] td { background: var(--sunken); }
 .lead-p { margin: 0 0 12px; }
+
+/* Mehrfachauswahl */
+th.sel, td.sel { width: 1%; padding-right: 0; }
+.bulk { padding: 8px 12px; margin-bottom: 8px; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--sunken); }
+.bulk[hidden] { display: none; }
+
+/* VPN-Laender nach Kontinent */
+.countries { display: block; }
+fieldset.continent { border: 0; border-top: 1px solid var(--line); margin: 0; padding: 6px 0 10px; }
+fieldset.continent:first-child { border-top: 0; }
+fieldset.continent legend { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-weight: 600; width: 100%; }
+.cgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 12px; }
+.cgrid label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+
+/* Barrierefreiheit */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.nav a:focus-visible, .plist a:focus-visible { outline-offset: -2px; }
+tr[aria-current="true"] td { background: var(--sunken); }
+.side-foot .btn { align-self: flex-start; padding-left: 0; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
