@@ -1,4 +1,6 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi==0.143.2
+starlette==1.8.0
+pydantic==2.14.1
+uvicorn==0.54.0
 httpx==0.28.1
 docker==7.1.0
