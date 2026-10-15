@@ -95,3 +95,9 @@ def test_parse_bash_list(client):
     r = client.post("/api/asns/parse", headers=H, json={"text": text, "action": "ban"}).json()
     assert [x["asn"] for x in r] == [15169, 8075]
     assert r[0]["note"] == "Google"
+
+
+def test_crowdsec_unreachable_is_422_not_500(client):
+    setup_local(client)
+    r = client.put("/api/crowdsec", headers=H, json={"mode": "lapi", "lapi_url": "http://127.0.0.1:1", "machine_id": "m", "password": "p"})
+    assert r.status_code == 422 and "nicht erreichbar" in r.json()["detail"]
