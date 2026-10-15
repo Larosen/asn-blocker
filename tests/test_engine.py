@@ -137,3 +137,8 @@ def test_diff_removes_duplicates():
 def test_go_duration():
     assert crowdsec.go_duration("167h59m58.5s") == pytest.approx(167 * 3600 + 59 * 60 + 58.5)
     assert crowdsec.go_duration("-1s") == -1
+
+
+def test_unreachable_lapi_raises_crowdsec_error():
+    with pytest.raises(crowdsec.CrowdSecError, match="nicht erreichbar"):
+        crowdsec.Lapi("http://127.0.0.1:1", "m", "p").test()

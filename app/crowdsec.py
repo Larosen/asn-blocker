@@ -62,8 +62,11 @@ class Lapi:
     def _auth(self):
         if self._token and time.time() < self._exp - 60:
             return
-        r = self.http.post(f"{self.base}/watchers/login",
-                           json={"machine_id": self.machine_id, "password": self.password, "scenarios": []})
+        try:
+            r = self.http.post(f"{self.base}/watchers/login",
+                               json={"machine_id": self.machine_id, "password": self.password, "scenarios": []})
+        except httpx.HTTPError as e:
+            raise CrowdSecError(f"LAPI nicht erreichbar ({self.base}): {e}") from e
         if r.status_code != 200:
             raise CrowdSecError(f"LAPI-Login fehlgeschlagen ({r.status_code}): {r.text[:200]}")
         self._token, self._exp = r.json()["token"], time.time() + 3000
@@ -111,7 +114,11 @@ class DockerCli:
             raise CrowdSecError(f"Container {container}: {e}") from e
 
     def _exec(self, *cmd):
-        res = self.c.exec_run(list(cmd))
+        import docker
+        try:
+            res = self.c.exec_run(list(cmd))
+        except docker.errors.DockerException as e:
+            raise CrowdSecError(f"docker exec fehlgeschlagen: {e}") from e
         out = res.output.decode(errors="replace")
         if res.exit_code != 0:
             raise CrowdSecError(f"{' '.join(cmd[:4])} -> exit {res.exit_code}: {out[-300:]}")
