@@ -179,3 +179,15 @@ def test_json_logging(capsys, monkeypatch):
     assert data["msg"] == "hallo welt" and data["run_id"] == 7 and data["level"] == "info"
     monkeypatch.setenv("LOG_FORMAT", "text")
     logs.setup()
+
+
+def test_dns_failure_is_reported(monkeypatch):
+    class S(sources.Provider):
+        id, name = "x", "Surfshark"
+
+        def fetch(self):
+            return [("DE", "Germany", "de-fra.prod.example.com")]
+
+    monkeypatch.setattr(sources, "_resolve", lambda h: [])
+    with pytest.raises(sources.SourceError, match="DNS-Auflösung"):
+        S().ips("DE")

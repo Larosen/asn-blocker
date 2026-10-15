@@ -194,6 +194,9 @@ class Provider:
             with ThreadPoolExecutor(16) as ex:
                 for res in ex.map(_resolve, hosts):
                     ips.update(filter(None, map(_public_ip, res)))
+            if not ips:
+                raise SourceError(f"{self.name} {code}: DNS-Auflösung für {len(hosts)} Hostnamen fehlgeschlagen "
+                                  f"(z. B. {hosts[0]}) – hat der Container DNS?")
         return sorted(ips)
 
 
