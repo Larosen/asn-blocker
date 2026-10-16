@@ -20,8 +20,8 @@ function ago(ts) {
   if (a < 172800) return rtf.format(Math.round(s / 3600), "hour");
   return rtf.format(Math.round(s / 86400), "day");
 }
-const act = (a) => ({ ban: t("Block"), captcha: t("Captcha") }[a] ?? a);
-const runStatus = (s) => ({ ok: t("succeeded"), failed: t("failed"), blocked: t("stopped"), running: t("running") }[s] ?? s);
+const act = (a) => ({ ban: t("Block"), captcha: t("Captcha") }[a] ?? esc(a));
+const runStatus = (s) => ({ ok: t("succeeded"), failed: t("failed"), blocked: t("stopped"), running: t("running") }[s] ?? esc(s));
 const CONTINENTS = ["EU", "NA", "SA", "AS", "OC", "AF", "AN", ""];
 const continentName = (c) => ({ EU: t("Europe"), NA: t("North America"), SA: t("South America"), AS: t("Asia"), AF: t("Africa"),
   OC: t("Oceania"), AN: t("Antarctica") }[c] ?? t("Other"));
@@ -653,7 +653,8 @@ async function viewSettings(el) {
   }));
   $("#imp").onchange = guard(async (e) => {
     const data = JSON.parse(await e.target.files[0].text());
-    if (!(await confirmDlg(t("Import configuration"), t("{a} ASN rules, {e} exemptions and {v} VPN countries will be added or overwritten.", { a: data.asns?.length || 0, e: data.exemptions?.length || 0, v: data.vpn?.length || 0 }), t("Import")))) return;
+    const count = (x) => (Array.isArray(x) ? x.length : 0);
+    if (!(await confirmDlg(t("Import configuration"), t("{a} ASN rules, {e} exemptions and {v} VPN countries will be added or overwritten.", { a: count(data.asns), e: count(data.exemptions), v: count(data.vpn) }), t("Import")))) return;
     await api("/import", { method: "POST", body: data }); toast(t("Imported")); refreshOverview();
   });
   $("#cleanup").onsubmit = guard(async (e) => {
