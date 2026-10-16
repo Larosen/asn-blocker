@@ -175,3 +175,48 @@ def test_cli_reset_auth_prints_working_token(client, capsys, monkeypatch):
     assert client.get("/api/session").json()["setup_required"]
     r = client.post("/api/setup/auth", headers=H, json={"token": token, "mode": "local", "password": "y" * 12})
     assert r.status_code == 200
+
+
+def test_lapi_password_not_reused_for_new_url(client, monkeypatch):
+    setup_local(client)
+    seen = []
+
+    class FakeLapi:
+        def __init__(self, url, machine, password):
+            seen.append((url, password))
+
+        def test(self):
+            return "Connected"
+
+    monkeypatch.setattr(main.crowdsec, "Lapi", FakeLapi)
+    cfg = {"mode": "lapi", "lapi_url": "http://crowdsec:8080", "machine_id": "asnb", "password": "S3cret"}
+    assert client.put("/api/crowdsec", headers=H, json=cfg).status_code == 200
+    assert client.put("/api/crowdsec", headers=H, json={**cfg, "password": ""}).status_code == 200   # same target
+    assert seen[-1] == ("http://crowdsec:8080", "S3cret")
+    r = client.put("/api/crowdsec", headers=H, json={**cfg, "lapi_url": "http://attacker:80", "password": ""})
+    assert r.status_code == 422 and seen[-1][0] != "http://attacker:80"
+    for bad in ("http://evil?x", "http://evil#x", "http://user@evil"):
+        assert client.put("/api/crowdsec", headers=H, json={**cfg, "lapi_url": bad}).status_code == 422
+
+
+def test_notify_url_is_masked_and_kept(client):
+    setup_local(client)
+    s = client.get("/api/settings").json()
+    s["notify_url"] = "https://ntfy.example/secret-topic?auth=TOKEN"
+    body = {k: s[k] for k in ("interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
+                              "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header")}
+    assert client.put("/api/settings", headers=H, json=body).status_code == 200
+    shown = client.get("/api/settings").json()["notify_url"]
+    assert shown == "https://ntfy.example/***"
+    assert client.put("/api/settings", headers=H, json={**body, "notify_url": shown}).status_code == 200
+    assert db.get("notify_url") == "https://ntfy.example/secret-topic?auth=TOKEN"
+    assert "secret-topic" not in client.get("/api/audit").text
+
+
+def test_input_bounds(client):
+    setup_local(client)
+    for bad in ("-5", "99999999999", "1_0", "٣"):
+        assert client.post("/api/exemptions", headers=H, json={"kind": "asn", "value": bad}).status_code == 422, bad
+    assert client.post("/api/exemptions", headers=H, json={"kind": "asn", "value": "AS13335"}).json()["value"] == "13335"
+    assert client.get("/api/audit?limit=-1").status_code == 422
+    assert client.get("/api/runs?limit=-1").status_code == 422

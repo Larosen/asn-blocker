@@ -28,6 +28,9 @@ def setup():
     root.handlers = [handler]
     root.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
     # route uvicorn loggers through the same handler
+    # httpx logs every request URL at INFO – those can contain notification tokens
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         lg = logging.getLogger(name)
         lg.handlers = []

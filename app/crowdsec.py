@@ -2,6 +2,7 @@
 import io
 import json
 import re
+import secrets
 import tarfile
 import time
 from datetime import datetime, timezone
@@ -11,7 +12,8 @@ import httpx
 from . import db
 
 BATCH = 500
-_DUR = re.compile(r"(-?[\d.]+)(h|ms|m|s|us|µs|ns)")
+MANUAL_ORIGINS = ("cscli", "cscli-import")  # decisions added by hand or by scripts via cscli
+_DUR = re.compile(r"(-?[\d.]{1,20})(h|ms|m|s|us|µs|ns)")
 _UNIT = {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
 
 
@@ -21,7 +23,7 @@ class CrowdSecError(RuntimeError):
 
 def go_duration(s: str) -> float:
     """'167h59m58.5s' -> seconds (negative = expired)."""
-    return sum(float(n) * _UNIT[u] for n, u in _DUR.findall(s or ""))
+    return sum(float(n) * _UNIT[u] for n, u in _DUR.findall((s or "")[:64]))
 
 
 def _now_iso():
@@ -57,7 +59,13 @@ class Lapi:
         self.base = url.rstrip("/") + "/v1"
         self.machine_id, self.password = machine_id, password
         self._token, self._exp = None, 0
-        self.http = httpx.Client(timeout=120)
+        self.http = httpx.Client(timeout=120, follow_redirects=False)
+
+    def __del__(self):
+        try:
+            self.http.close()
+        except Exception:  # noqa: BLE001 - interpreter shutdown
+            pass
 
     def _auth(self):
         if self._token and time.time() < self._exp - 60:
@@ -66,9 +74,9 @@ class Lapi:
             r = self.http.post(f"{self.base}/watchers/login",
                                json={"machine_id": self.machine_id, "password": self.password, "scenarios": []})
         except httpx.HTTPError as e:
-            raise CrowdSecError(f"LAPI not reachable ({self.base}): {e}") from e
-        if r.status_code != 200:
-            raise CrowdSecError(f"LAPI login failed ({r.status_code}): {r.text[:200]}")
+            raise CrowdSecError(f"LAPI not reachable ({self.base}): {type(e).__name__}") from e
+        if r.status_code != 200:  # no response body: the URL is user-configurable, don't reflect what it returns
+            raise CrowdSecError(f"LAPI login failed (HTTP {r.status_code}) – check machine ID and password")
         self._token, self._exp = r.json()["token"], time.time() + 3000
 
     def _req(self, method, path, **kw):
@@ -76,9 +84,13 @@ class Lapi:
         try:
             r = self.http.request(method, self.base + path, headers={"Authorization": f"Bearer {self._token}"}, **kw)
         except httpx.HTTPError as e:
-            raise CrowdSecError(f"LAPI not reachable: {e}") from e
+            raise CrowdSecError(f"LAPI not reachable: {type(e).__name__}") from e
         if r.status_code >= 300:
-            raise CrowdSecError(f"LAPI {method} {path} -> {r.status_code}: {r.text[:300]}")
+            try:
+                detail = str(r.json().get("message", ""))[:200]
+            except (ValueError, AttributeError):
+                detail = ""
+            raise CrowdSecError(f"LAPI {method} {path} -> HTTP {r.status_code}" + (f": {detail}" if detail else ""))
         return r.json() if r.content else None
 
     def test(self):
@@ -100,7 +112,9 @@ class Lapi:
             self._req("DELETE", f"/decisions/{i}")
 
     def delete_scenario(self, reason):
-        return int((self._req("DELETE", "/decisions", params={"scenario": reason}) or {}).get("nbDeleted", 0))
+        """Only decisions created via cscli (add/import) – never CrowdSec's own detections or blocklists."""
+        return sum(int((self._req("DELETE", "/decisions", params={"scenario": reason, "origin": o}) or {})
+                       .get("nbDeleted", 0)) for o in MANUAL_ORIGINS)
 
 
 class DockerCli:
@@ -132,27 +146,30 @@ class DockerCli:
         return _decisions_from_alerts(json.loads(out or "null"), reason)
 
     def add(self, values, typ, reason, duration_s):
+        name = f"asn-blocker-{secrets.token_hex(8)}.txt"
         data = ("\n".join(values) + "\n").encode()
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
-            info = tarfile.TarInfo("asn-blocker-import.txt")
+            info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         if not self.c.put_archive("/tmp", buf.getvalue()):
             raise CrowdSecError("Copying into the CrowdSec container failed")
-        self._exec("cscli", "decisions", "import", "-i", "/tmp/asn-blocker-import.txt", "--format", "values",
+        self._exec("cscli", "decisions", "import", "-i", f"/tmp/{name}", "--format", "values",
                    "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
                    "--batch", str(BATCH))
-        self.c.exec_run(["rm", "-f", "/tmp/asn-blocker-import.txt"])
+        self.c.exec_run(["rm", "-f", f"/tmp/{name}"])
 
     def delete_ids(self, ids):
         for i in ids:
             self._exec("cscli", "decisions", "delete", "--id", str(i))
 
     def delete_scenario(self, reason):
-        out = self._exec("cscli", "decisions", "delete", "--scenario", reason)
-        m = re.search(r"(\d+) decision", out)
-        return int(m.group(1)) if m else 0
+        n = 0
+        for o in MANUAL_ORIGINS:
+            m = re.search(r"(\d+) decision", self._exec("cscli", "decisions", "delete", "--scenario", reason, "--origin", o))
+            n += int(m.group(1)) if m else 0
+        return n
 
 
 def backend():

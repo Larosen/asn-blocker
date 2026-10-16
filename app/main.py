@@ -312,6 +312,8 @@ class AsnRule(BaseModel):
 
 @api.put("/asns")
 def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
+    if len(rules) > 5000:
+        raise HTTPException(422, "At most 5000 rules per request")
     blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
     if blocked:
         raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
@@ -441,11 +443,17 @@ def list_exemptions():
     return rows
 
 
+def _asn(v: str) -> int:
+    digits = v.strip().upper().removeprefix("AS")
+    if not re.fullmatch(r"[0-9]{1,10}", digits) or not 0 < int(digits) < 2**32:
+        raise ValueError(v)
+    return int(digits)
+
+
 @api.post("/exemptions")
 def add_exemption(e: Exemption, user: str = Depends(require_user)):
     try:
-        value = str(int(e.value.upper().removeprefix("AS"))) if e.kind == "asn" else \
-            str(ipaddress.ip_network(e.value.strip(), strict=False))
+        value = str(_asn(e.value)) if e.kind == "asn" else str(ipaddress.ip_network(e.value.strip(), strict=False))
     except ValueError:
         raise HTTPException(422, f"Invalid: {e.value}")
     with db.tx() as c:
@@ -568,7 +576,8 @@ PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_p
 
 @api.get("/settings")
 def get_settings():
-    return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password"))}
+    return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password")),
+                                                      "notify_url": notify.mask(db.get("notify_url"))}
 
 
 class Settings(BaseModel):
@@ -595,6 +604,8 @@ class Settings(BaseModel):
 
 @api.put("/settings")
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
+    if s.notify_url and s.notify_url == notify.mask(db.get("notify_url")):
+        s.notify_url = db.get("notify_url")  # unchanged masked value from the form: keep the secret
     if s.decision_hours < s.interval_hours * 2:
         raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
@@ -607,7 +618,7 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
             db.put(k, v, c)
         if affects:
             db.bump_rev(c)
-    db.audit(user, "settings.put", s.model_dump())
+    db.audit(user, "settings.put", s.model_dump() | {"notify_url": notify.mask(s.notify_url)})
     return {"ok": True}
 
 
@@ -621,7 +632,7 @@ def notify_test():
 
 class CrowdSecCfg(BaseModel):
     mode: Literal["lapi", "docker"]
-    lapi_url: str = Field("http://crowdsec:8080", pattern=r"^https?://[^\s/]+(:\d+)?/?$")
+    lapi_url: str = Field("http://crowdsec:8080", pattern=r"^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?/?$")
     machine_id: str = Field("", max_length=128)
     password: str = Field("", max_length=512)   # empty = keep the current one
     container: str = Field("crowdsec", pattern=r"^[\w.-]{1,128}$")
@@ -629,7 +640,11 @@ class CrowdSecCfg(BaseModel):
 
 @api.put("/crowdsec")
 def put_crowdsec(cfg: CrowdSecCfg, user: str = Depends(require_user)):
-    password = cfg.password or db.get("lapi_password")
+    # The stored password is only reused for the same LAPI and machine – otherwise it could be sent to any URL
+    same = cfg.lapi_url == db.get("lapi_url") and cfg.machine_id == db.get("lapi_machine_id")
+    password = cfg.password or (db.get("lapi_password") if same else "")
+    if cfg.mode == "lapi" and not password:
+        raise HTTPException(422, "Enter the machine password (required when URL or machine ID change)")
     try:
         msg = (crowdsec.Lapi(cfg.lapi_url, cfg.machine_id, password) if cfg.mode == "lapi"
                else crowdsec.DockerCli(cfg.container)).test()
@@ -694,7 +709,7 @@ def get_preview():
 
 
 @api.get("/runs")
-def list_runs(limit: int = 30):
+def list_runs(limit: int = Query(30, ge=1, le=500)):
     return [_run_row(r) for r in db.q("SELECT id,kind,status,triggered_by,started_at,finished_at,summary FROM runs "
                                       "ORDER BY id DESC LIMIT ?", (min(limit, 100),))]
 
@@ -714,7 +729,7 @@ def ranges(typ: Literal["ban", "captcha"]):
 
 
 @api.get("/audit")
-def audit_log(limit: int = 200):
+def audit_log(limit: int = Query(200, ge=1, le=1000)):
     return db.q("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (min(limit, 1000),))
 
 

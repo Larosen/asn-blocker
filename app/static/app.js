@@ -588,7 +588,7 @@ async function viewSettings(el) {
       <pre class="cmd">docker exec crowdsec cscli machines add asn-blocker --auto -f -</pre>
       <label class="field"><span>${t("LAPI URL")}</span><input type="url" name="url" class="mono" value="${esc(s.lapi_url)}"><small>${t("Both containers must share a Docker network.")}</small></label>
       <label class="field"><span>${t("Machine ID")}</span><input type="text" name="mid" class="mono" value="${esc(s.lapi_machine_id || "asn-blocker")}"></label>
-      <label class="field"><span>${t("Password")}</span><input type="password" name="pw" class="mono" autocomplete="off" placeholder="${s.lapi_password_set ? t("saved – leave empty to keep") : ""}"></label>
+      <label class="field"><span>${t("Password")}</span><input type="password" name="pw" class="mono" autocomplete="off" placeholder="${s.lapi_password_set ? t("saved – leave empty to keep (required again if URL or machine ID change)") : ""}"></label>
     </div>
     <div data-cs="docker" hidden><div class="note danger small">${t("This requires mounting /var/run/docker.sock. Whoever takes over the UI then has root on the host.")}</div>
       <label class="field"><span>${t("Container name")}</span><input type="text" name="container" class="mono" value="${esc(s.docker_container)}"></label></div>

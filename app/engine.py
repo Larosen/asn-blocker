@@ -14,6 +14,15 @@ from collections import defaultdict
 from . import crowdsec, db, netset, notify, selfprotect, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
+# Never blocked, whatever a source says: private, loopback, link-local, CGNAT, documentation, multicast, reserved
+NON_PUBLIC = [ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
+    "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3",
+    "::/8", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8")]
+# Shorter prefixes are never announced by a single real ASN
+MIN_PREFIXLEN = {4: 8, 6: 16}
+# Hard cap even on the first run: about 12 % of the IPv4 space
+MAX_V4_ADDRESSES = 2**29
 _lock = threading.Lock()
 log_ = logging.getLogger("asn_blocker.engine")
 
@@ -68,10 +77,13 @@ def build(log, fresh=True):
     for r in db.q("SELECT value, note FROM exemptions WHERE kind='cidr'"):
         exempt += [(n, "Manual" + (f": {r['note']}" if r["note"] else "")) for n in netset.parse([r["value"]])]
 
+    exempt += [(n, "Non-public range") for n in NON_PUBLIC]
     guard = guard_ips()
     exempt += [(ipaddress.ip_network(ip), label) for ip, label in guard.items()]
     prot_asns = sorted(selfprotect.protected_asns())
     for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
+        if not p:  # fail closed like exempt ASNs: better no run than a run without the protection
+            raise sources.SourceError(f"Self-protection AS{asn}: no prefixes")
         exempt += [(n, f"Self-protection AS{asn}") for n in netset.parse(p)]
     log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs")
 
@@ -93,6 +105,10 @@ def build(log, fresh=True):
     spamhaus = [0, 0]  # ASNs, prefixes – summarized instead of hundreds of individual lines
     for asn, r in sorted(asn_rules.items()):
         nets = [n for n in netset.parse(prefixes[asn]) if ipv6 or n.version == 4]
+        huge = [n for n in nets if n.prefixlen < MIN_PREFIXLEN[n.version]]
+        if huge:  # no real ASN announces these – a broken or poisoned source
+            log(f"  WARNING AS{asn}: ignored implausibly large prefixes {', '.join(map(str, huge[:5]))}")
+            nets = [n for n in nets if n.prefixlen >= MIN_PREFIXLEN[n.version]]
         raw[r["action"]] += nets
         if r.get("spamhaus"):
             spamhaus[0] += 1
@@ -156,11 +172,25 @@ def _counts():
     return {t: db.q1("SELECT count(*) n FROM applied WHERE type=?", (t,))["n"] for t in REASONS}
 
 
+def _v4_addresses(cidrs):
+    return sum(n.num_addresses for n in netset.parse(cidrs) if n.version == 4)
+
+
 def _sanity(desired, force):
     prev = sum(_counts().values())
     new = sum(len(v) for v in desired.values())
-    if force or prev == 0:
+    if force:
         return
+    addr = _v4_addresses([c for v in desired.values() for c in v])
+    if addr > MAX_V4_ADDRESSES:
+        raise Blocked(f"{addr:,} IPv4 addresses would be blocked ({addr / 2**32:.1%} of IPv4), "
+                      f"more than the limit of {MAX_V4_ADDRESSES:,}")
+    if prev == 0:
+        return
+    prev_addr = _v4_addresses([r["value"] for r in db.q("SELECT value FROM applied")])
+    if prev_addr and abs(addr - prev_addr) / prev_addr * 100 > db.get("sanity_percent"):
+        raise Blocked(f"Blocked IPv4 address space changes by {abs(addr - prev_addr) / prev_addr * 100:.0f} % "
+                      f"({prev_addr:,} -> {addr:,}), limit {db.get('sanity_percent')} %")
     if new == 0 and (db.q1("SELECT 1 x FROM asn_rules") or db.get("spamhaus_asndrop")):
         raise Blocked("Rules exist, but 0 ranges computed")
     pct = abs(new - prev) / prev * 100
@@ -356,11 +386,15 @@ def next_due():
 
 
 def scheduler():
+    last_prune = 0.0
     while True:
         try:
             due = next_due()
             if due and due <= time.time() and not is_running():
                 run("apply", "scheduler")
+            if time.time() - last_prune > 86400:
+                db.prune()
+                last_prune = time.time()
             updated = db.get("asn_names_updated") or 0
             if time.time() - updated > 7 * 86400:
                 try:
