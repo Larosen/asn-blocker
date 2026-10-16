@@ -18,7 +18,7 @@ jobs:
       - run: ruff check app tests
       - run: pytest -q
 
-  # Integrationstest gegen eine echte CrowdSec-LAPI (aktuelles Release)
+  # Integration test against a real CrowdSec LAPI (current release)
   lapi:
     runs-on: ubuntu-latest
     env:
@@ -31,16 +31,16 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements-dev.txt
-      - name: CrowdSec starten
+      - name: Start CrowdSec
         run: |
           docker run -d --name crowdsec -p 127.0.0.1:8080:8080 -v cs-data:/var/lib/crowdsec/data \
             -e DISABLE_ONLINE_API=true "$CROWDSEC_IMAGE"
           for i in $(seq 1 60); do docker exec crowdsec cscli lapi status >/dev/null 2>&1 && break; sleep 2; done
           docker exec crowdsec cscli version
           echo "CROWDSEC_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-      - name: Machine anlegen
+      - name: Create machine
         run: docker exec crowdsec cscli machines add "$CROWDSEC_MACHINE_ID" --password "$CROWDSEC_PASSWORD" -f /dev/null
-      - name: Integrationstest (darf nicht übersprungen werden)
+      - name: Integration test (must not be skipped)
         run: pytest -q -rs tests/test_lapi_integration.py | tee out.txt && grep -q "1 passed" out.txt
       - if: failure()
         run: docker logs crowdsec | tail -50
@@ -55,7 +55,7 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Image-Name (GHCR verlangt Kleinbuchstaben)
+      - name: Image name (GHCR requires lowercase)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -86,8 +86,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           provenance: mode=max
-      # Trivy direkt als Image (per Digest gepinnt) statt trivy-action
-      - name: Trivy-Scan
+      # Trivy run directly as an image (pinned by digest) instead of trivy-action
+      - name: Trivy scan
         if: github.event_name != 'pull_request'
         env:
           TRIVY_USERNAME: ${{ github.actor }}
@@ -97,8 +97,8 @@ jobs:
           aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
           image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
           "${IMAGE}@${{ steps.build.outputs.digest }}"
-      # Attestations gibt es fuer private Repos persoenlicher Accounts nicht; die
-      # SLSA-Provenance haengt per buildx (provenance: mode=max) trotzdem am Image.
+      # Attestations are not available for private repos of personal accounts; the
+      # SLSA provenance is still attached to the image by buildx (provenance: mode=max).
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         if: github.event_name != 'pull_request' && !github.event.repository.private
         with:

@@ -1,41 +1,47 @@
 # Changelog
 
+## 0.5.0 (2026-10-16)
+- OLED black theme (pure black for OLED screens) and an explicit theme switch: Auto / Light / Dark / OLED black, remembered per browser
+- Improved mobile layout
+- Everything in English: UI, API messages, logs, CLI and docs; the language switch was removed
+- Watched-IP status value `frei` renamed to `clear`
+
 ## 0.4.0
-- **Selbstschutz** gegen versehentliches Aussperren (auch per SSH bei Firewall-Bouncern):
-  - aktive SSH-Sitzungen des Hosts werden automatisch erkannt (`/var/run/utmp` schreibgeschützt eingebunden) und aus allen Sperren herausgeschnitten
-  - geschützte IPs und ASNs: nie gesperrt, auch nicht über Spamhaus oder eine bestätigte Plausibilitätsprüfung; Regeln für geschützte ASNs werden abgelehnt
-  - `docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect` schützt IP und ASN der aktuellen SSH-Verbindung
-  - harte Endkontrolle vor jedem Schreibzugriff: landet eine geschützte IP in einer Sperre, bricht der Lauf ab
-- Lauf-Protokoll fasst Spamhaus-ASNs in einer Zeile zusammen; fehlende ASN-Namen werden beim Lauf ergänzt
+- **Self-protection** against accidental lockout (including over SSH with firewall bouncers):
+  - the host's active SSH sessions are detected automatically (`/var/run/utmp` mounted read-only) and cut out of all blocks
+  - protected IPs and ASNs: never blocked, not even via Spamhaus or a confirmed plausibility check; rules for protected ASNs are rejected
+  - `docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect` protects the IP and ASN of the current SSH connection
+  - hard final check before every write: if a protected IP ends up in a block, the run aborts
+- Run log groups Spamhaus ASNs into one line; missing ASN names are filled in during the run
 
 ## 0.3.0
-- Oberfläche auf Deutsch und Englisch (automatisch nach Browsersprache, umschaltbar)
-- ASN-Tabelle: Mehrfachauswahl mit Massenaktionen (Blockieren, Captcha, Entfernen)
-- Apply-Leiste zeigt vor dem Anwenden die erwartete Änderung (+/− Ranges je Aktion)
-- VPN-Länder nach Kontinent gruppiert, „alle/keine“ je Kontinent
-- Logging über `logging`, optional als JSON (`LOG_FORMAT=json`)
-- Barrierefreiheit: axe-core (WCAG 2.1 AA) ohne Befund in hellem und dunklem Modus; Kontraste angepasst,
-  Screenreader-Beschriftungen, `aria-current`, Live-Regionen
+- UI in German and English (automatic by browser language, switchable)
+- ASN table: multi-select with bulk actions (Block, Captcha, Remove)
+- Apply bar shows the expected change before applying (+/− ranges per action)
+- VPN countries grouped by continent, "all/none" per continent
+- Logging via `logging`, optionally as JSON (`LOG_FORMAT=json`)
+- Accessibility: axe-core (WCAG 2.1 AA) clean in light and dark mode; adjusted contrast,
+  screen reader labels, `aria-current`, live regions
 
 ## 0.2.1
-- Getestet gegen CrowdSec 1.8.1 und 1.8.2-rc1; neuer CI-Job mit echter CrowdSec-1.8.1-LAPI
-- Python 3.14 (Basis-Image per Digest gepinnt), Trivy 0.73.0
-- pip aus dem Laufzeit-Image entfernt (veraltete Pakete in `pip/_vendor` lösten Trivy-Funde aus)
-- Fehlerbehandlung, wenn die LAPI nicht erreichbar ist (vorher HTTP 500 bei „Verbindung testen“)
-- Abhängigkeiten aktualisiert (fastapi 0.143, starlette 1.8, Actions)
+- Tested against CrowdSec 1.8.1 and 1.8.2-rc1; new CI job with a real CrowdSec 1.8.1 LAPI
+- Python 3.14 (base image pinned by digest), Trivy 0.73.0
+- pip removed from the runtime image (outdated packages in `pip/_vendor` triggered Trivy findings)
+- Error handling when the LAPI is unreachable (previously HTTP 500 on "Test connection")
+- Dependencies updated (fastapi 0.143, starlette 1.8, Actions)
 
 ## 0.2.0
-- CrowdSec-Anbindung über die Local API (kein Docker-Socket mehr nötig), Docker-Socket als Legacy-Modus
-- Diff-Sync: neue Ranges zuerst, entfallene danach – keine Lücke ohne Schutz; Erneuerung vor Ablauf
-- SQLite statt JSON; Läufe mit Änderungsliste, Audit-Protokoll
-- Ersteinrichtung mit Setup-Token; Anmeldung per Reverse-Proxy-Header (SSO) oder eigenem Login
-- CSRF-Schutz, strikte CSP und Security-Header, keine API-Doku öffentlich
-- Plausibilitätsgrenze, Wächter-IPs, Aussperr-Warnung, IP-Prüfer, Benachrichtigungen (ntfy/Gotify/Webhook)
-- Lokale ASN-Suche (bgp.tools), ASN-Größen, Typ-Warnung bei Endkunden-Netzen
-- VPN: zusätzlich IVPN, PIA, AirVPN; exakte IPs als Standard statt /24
-- Spamhaus ASN-DROP optional
-- Neue Oberfläche ohne Build-Schritt; Import der ASN-Liste aus dem Bash-Skript
-- Image: non-root, read-only-fähig, Healthcheck; CI mit Tests, Trivy, SBOM und Provenance
+- CrowdSec connection via the Local API (Docker socket no longer required), Docker socket as legacy mode
+- Diff sync: new ranges first, obsolete ones afterwards, so no gap in protection; renewal before expiry
+- SQLite instead of JSON; runs with change list, audit log
+- Initial setup with setup token; sign-in via reverse proxy header (SSO) or built-in login
+- CSRF protection, strict CSP and security headers, no public API docs
+- Plausibility limit, watched IPs, lockout warning, IP checker, notifications (ntfy/Gotify/webhook)
+- Local ASN search (bgp.tools), ASN sizes, type warning for eyeball (end-user) networks
+- VPN: added IVPN, PIA, AirVPN; exact IPs by default instead of /24
+- Optional Spamhaus ASN-DROP
+- New UI without a build step; import of the ASN list from the bash script
+- Image: non-root, read-only capable, healthcheck; CI with tests, Trivy, SBOM and provenance
 
 ## 0.1.0
-- Erster Prototyp
+- First prototype

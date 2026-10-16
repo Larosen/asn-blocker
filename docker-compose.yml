@@ -1,4 +1,4 @@
-# Minimal: ein Container, ein Volume. Alles Weitere wird in der Oberfläche eingerichtet.
+# Minimal: one container, one volume. Everything else is set up in the UI.
 services:
   asn-blocker:
     image: ghcr.io/larosen/asn-blocker:latest
@@ -6,15 +6,15 @@ services:
     restart: unless-stopped
     volumes:
       - asn-blocker-data:/data
-      # Selbstschutz: aktive SSH-Sitzungen des Hosts erkennen (nur lesend)
+      # Self-protection: detect the host's active SSH sessions (read-only)
       - /var/run/utmp:/host/utmp:ro
     networks:
-      - crowdsec      # Netz, in dem der CrowdSec-Container erreichbar ist
-      # - pangolin    # bzw. das Netz des Reverse Proxys (Newt/Traefik)
-    # Ohne Reverse Proxy stattdessen nur lokal veröffentlichen:
+      - crowdsec      # network in which the CrowdSec container is reachable
+      # - pangolin    # or the reverse proxy's network (Newt/Traefik)
+    # Without a reverse proxy, publish locally only instead:
     # ports: ["127.0.0.1:8080:8080"]
 
-    # Empfohlene Härtung (optional):
+    # Recommended hardening (optional):
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
