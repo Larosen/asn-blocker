@@ -1,5 +1,5 @@
 """Maintenance:
-  docker exec asn-blocker python -m app.cli reset-auth      reset sign-in
+  docker exec asn-blocker python -m app.cli reset-auth      reset sign-in (prints a new setup token)
   docker exec asn-blocker python -m app.cli check-sources   check all external data sources live
   docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect [IP] [--ip-only]
       permanently protect the IP and ASN of the current SSH connection (or the given IP) from blocks
@@ -10,7 +10,7 @@ import os
 import sys
 import time
 
-from . import db, selfprotect, sources
+from . import auth, db, selfprotect, sources
 
 
 def check_sources() -> bool:
@@ -128,7 +128,8 @@ def main():
         with db.tx() as c:
             db.put("auth_mode", None, c)
             c.execute("DELETE FROM sessions")
-        print("Sign-in reset. Restart the container – the new setup token will then be in the log.")
+        print(f"Sign-in reset. Open the web UI and complete the setup with this setup token:\n  {auth.new_setup_token()}\n"
+              "(Any older setup token is no longer valid.)")
     elif cmd == "protect":
         sys.exit(0 if protect(sys.argv[2:]) else 1)
     elif cmd == "check-sources":

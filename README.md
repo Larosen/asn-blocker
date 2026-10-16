@@ -64,14 +64,18 @@ That's it. No Docker socket, no environment variables.
 - Do **not** publish the container with `ports:`; attach it to the proxy's Docker network instead (for Pangolin: the Newt or Traefik network).
 - In Pangolin, create a resource for `http://asn-blocker:8080` with authentication enabled.
 - During initial setup, choose **"Reverse proxy with SSO"**:
-  - *Trusted proxy IPs*: the IP/network of the proxy container (pre-filled).
+  - *Trusted proxy IPs*: the IP of the proxy container (pre-filled). Trust only that single address, not the whole
+    Docker network: every host in a trusted range can send any username header. If the proxy container gets a new IP
+    after being recreated, run `reset-auth` (see below) or pin its address in your proxy's compose file.
   - *Header with username*: the header the proxy sets after login (default `Remote-User`).
   Setup verifies that the current request meets these conditions, so you cannot accidentally lock yourself out.
 - Without an SSO proxy: choose **"Built-in login"** (password, session cookie, login throttling).
 
 The app expects TLS to terminate at the proxy. Identity headers and `X-Forwarded-For` are only accepted from the configured proxy IPs.
+The proxy must *set* (overwrite) the username header; a request that carries it twice is rejected. Do not add
+unauthenticated bypass rules for this resource in Pangolin.
 
-Lost access? Run `docker exec asn-blocker python -m app.cli reset-auth`, restart the container and take the new token from the log.
+Lost access? Run `docker exec asn-blocker python -m app.cli reset-auth` – it prints a new setup token; open the web UI and set up sign-in again (no restart needed).
 
 ### Self-protection: don't lock yourself out
 
