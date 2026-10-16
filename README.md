@@ -37,8 +37,16 @@ services:
   asn-blocker:
     image: ghcr.io/larosen/asn-blocker:latest
     restart: unless-stopped
-    volumes: [asn-blocker-data:/data]
+    volumes:
+      - asn-blocker-data:/data
+      - /var/run/utmp:/host/utmp:ro   # self-protection for active SSH sessions
     networks: [crowdsec]          # network in which CrowdSec is reachable
+    read_only: true
+    tmpfs: ["/tmp:size=16m,noexec,nosuid,nodev"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 128
 volumes:
   asn-blocker-data:
 networks:
@@ -67,13 +75,35 @@ That's it. No Docker socket, no environment variables.
   - *Trusted proxy IPs*: the IP of the proxy container (pre-filled). Trust only that single address, not the whole
     Docker network: every host in a trusted range can send any username header. If the proxy container gets a new IP
     after being recreated, run `reset-auth` (see below) or pin its address in your proxy's compose file.
-  - *Header with username*: the header the proxy sets after login (default `Remote-User`).
+  - *Header with username*: the header the proxy sets after login (default `Remote-User`). Use only a header the
+    proxy always removes from client requests and sets itself: `Remote-User` with Pangolin (Badger ≥ 1.2.1 strips
+    client-supplied `Remote-*` headers), or the `X-authentik-*` headers listed in `authResponseHeaders` with
+    Authentik forwardAuth.
   Setup verifies that the current request meets these conditions, so you cannot accidentally lock yourself out.
 - Without an SSO proxy: choose **"Built-in login"** (password, session cookie, login throttling).
 
 The app expects TLS to terminate at the proxy. Identity headers and `X-Forwarded-For` are only accepted from the configured proxy IPs.
 The proxy must *set* (overwrite) the username header; a request that carries it twice is rejected. Do not add
 unauthenticated bypass rules for this resource in Pangolin.
+
+#### Network isolation
+
+The proxy network of a Pangolin stack also contains Traefik, Pangolin's API, Gerbil, middleware-manager, Authentik
+and CrowdSec. The app only needs to reach CrowdSec's LAPI and to be reached by the proxy. For stronger isolation,
+create a dedicated network that only the proxy (Gerbil/Traefik) and asn-blocker join, and a second one for CrowdSec:
+
+```bash
+docker network create asnb-proxy && docker network connect asnb-proxy gerbil   # the container Traefik runs in
+docker network create asnb-lapi  && docker network connect asnb-lapi crowdsec
+```
+
+Then use `networks: [asnb-proxy, asnb-lapi]` (both `external: true`) instead of the shared proxy network.
+Re-run the `docker network connect` commands if those containers are recreated.
+
+#### Updates
+
+`:latest` and the version tags are only published after the image passed the vulnerability scan. Watchtower
+can follow `:latest`; for a pinned deployment use a version tag such as `:0.5` or a digest.
 
 Lost access? Run `docker exec asn-blocker python -m app.cli reset-auth` – it prints a new setup token; open the web UI and set up sign-in again (no restart needed).
 
@@ -111,7 +141,7 @@ Firewall bouncers (nftables/iptables) **ignore** captcha decisions.
 |---|---|
 | Data | `/data/asn-blocker.db` (SQLite): rules, runs, audit log, caches, CrowdSec credentials |
 | Process | one Uvicorn worker, scheduler in the same process |
-| User | UID 10001, runs with `read_only`, `cap_drop: ALL`, `no-new-privileges` |
+| User | UID 10001, no setuid binaries in the image; run it with `read_only`, `cap_drop: ALL`, `no-new-privileges` (see compose file) |
 | Healthcheck | `GET /healthz` (built into the image) |
 | Logs | stdout, readable text; `LOG_FORMAT=json` for JSON (e.g. Loki), `LOG_LEVEL=DEBUG` for more detail |
 | Language / theme | English; theme Auto / Light / Dark / OLED black, remembered per browser |
@@ -129,10 +159,12 @@ The image is based on Python 3.14.
 ## Development
 
 ```bash
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements.txt && pip install -r requirements-dev.txt
 ruff check app tests && pytest -q
 DATA_DIR=./data uvicorn app.main:app --reload --port 8080
 ```
 
 Integration test against a real LAPI: set `CROWDSEC_LAPI_URL`, `CROWDSEC_MACHINE_ID`, `CROWDSEC_PASSWORD`, then run `pytest tests/test_lapi_integration.py`.
 The frontend is plain HTML/CSS/JS with no build step (`app/static`).
+Dependencies: direct pins live in `requirements.in`; `requirements.txt` is the fully pinned, hash-checked lock
+(`uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes -o requirements.txt`).

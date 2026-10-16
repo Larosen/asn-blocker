@@ -84,7 +84,7 @@ h1 { font-size: 16px; } h2 { font-size: 14px; } h3 { font-size: 13px; }
 input, select, textarea, button { font: inherit; color: inherit; }
 input[type=text], input[type=password], input[type=search], input[type=number], input[type=url], select, textarea {
   background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 5px 8px; min-height: 30px; }
-select { max-width: 100%; text-overflow: ellipsis; }
+select { max-width: 100%; min-width: 0; text-overflow: ellipsis; }
 textarea { width: 100%; min-height: 140px; font-family: var(--mono); font-size: 12px; }
 input.mono { font-family: var(--mono); }
 label.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
@@ -155,7 +155,7 @@ pre.log { margin: 0; padding: 12px; background: var(--sunken); font-family: var(
 .countries .cc { font-family: var(--mono); font-size: 11px; color: var(--fg-3); }
 
 /* Login / Setup */
-.center { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.center { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; padding: 16px; }
 .card { width: 100%; max-width: 440px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
 .card h1 { margin-bottom: 4px; }
 .card .lead { color: var(--fg-2); margin: 0 0 18px; }
