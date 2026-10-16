@@ -113,6 +113,17 @@ const EN = {
   "Ändern": "Change", "Ändert sich die Anzahl der Ranges stärker, hält ein Lauf an und wartet auf Bestätigung.": "If the number of ranges changes more than this, a run stops and waits for confirmation.",
   "Änderungen": "Changes", "Öffentliche Liste bekannter Abuse-Netze, wird bei jedem Lauf aktualisiert.": "Public list of known abuse networks, refreshed on every run.",
   "Übernehmen": "Import", "Übersicht": "Overview",
+  "Selbstschutz": "Self-protection", "geschützt": "protected", "IP und ASN schützen": "Protect IP and ASN",
+  "Geschützte IPs und ASNs werden nie gesperrt – auch nicht über Spamhaus oder eine bestätigte Plausibilitätsprüfung. Aktive SSH-Sitzungen des Hosts sind automatisch geschützt.":
+    "Protected IPs and ASNs are never blocked – not via Spamhaus and not after confirming a sanity check. Active SSH sessions on the host are protected automatically.",
+  "Meine Browser-IP {ip} schützen": "Protect my browser IP {ip}", "Aktive SSH-Sitzungen": "Active SSH sessions", "erkannt": "detected",
+  "nicht verfügbar": "not available",
+  "Damit SSH-Sitzungen automatisch geschützt werden, /var/run/utmp des Hosts schreibgeschützt einbinden:": "To protect SSH sessions automatically, mount the host's /var/run/utmp read-only:",
+  "Alternativ in der SSH-Sitzung ausführen:": "Or run this in your SSH session:", "Keine SSH-Sitzung von außen aktiv.": "No remote SSH session active.",
+  "Dauerhaft geschützt": "Permanently protected", "Noch nichts geschützt. Schütze mindestens den ASN deines Internetanschlusses.": "Nothing protected yet. Protect at least the ASN of your internet connection.",
+  "ganzen ASN schützen": "protect whole ASN", "Schützen": "Protect", "{ip} und {asns} geschützt": "{ip} and {asns} protected", "{ip} geschützt": "{ip} protected",
+  "Schutz entfernen": "Remove protection", "Danach kann {v} wieder gesperrt werden. Fortfahren?": "{v} can then be blocked again. Continue?",
+  "Selbstschutz hinzugefügt": "Self-protection added", "Selbstschutz entfernt": "Self-protection removed",
   // Meldungen des Servers
   "Verbunden": "Connected", "Nicht angemeldet.": "Not signed in.", "Benutzername oder Passwort falsch": "Wrong username or password",
   "Zu viele Fehlversuche, bitte später erneut versuchen": "Too many failed attempts, please try again later",

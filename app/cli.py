@@ -1,12 +1,16 @@
 """Wartung:
   docker exec asn-blocker python -m app.cli reset-auth      Anmeldung zuruecksetzen
   docker exec asn-blocker python -m app.cli check-sources   alle externen Datenquellen live pruefen
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect [IP] [--ip-only]
+      IP und ASN der aktuellen SSH-Verbindung (oder der angegebenen IP) dauerhaft vor Sperren schuetzen
+  docker exec asn-blocker python -m app.cli protect --list  geschuetzte IPs/ASNs und SSH-Sitzungen anzeigen
 """
 import ipaddress
+import os
 import sys
 import time
 
-from . import db, sources
+from . import db, selfprotect, sources
 
 
 def check_sources() -> bool:
@@ -84,6 +88,39 @@ def check_sources() -> bool:
     return not failed
 
 
+def protect(args) -> bool:
+    if "--list" in args:
+        sessions, status = selfprotect.ssh_sessions()
+        print(f"SSH-Sitzungen (utmp: {status}):")
+        for s in sessions:
+            print(f"  {s['ip']:<40} {s['user']}@{s['line']}")
+        print("Geschützt:")
+        for r in selfprotect.protected():
+            print(f"  {r['kind']:<4} {r['value']:<40} {r['note']}")
+        return True
+    ips = [a for a in args if not a.startswith("--")]
+    ip = ips[0] if ips else (os.environ.get("SSH_CLIENT") or os.environ.get("SSH_CONNECTION") or "").split(" ")[0]
+    if not ip:
+        print("Keine IP angegeben und SSH_CLIENT nicht gesetzt.\n"
+              "Aus der SSH-Sitzung aufrufen mit: docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect")
+        return False
+    try:
+        asns = selfprotect.protect_ip(ip, "SSH (CLI)", with_asn="--ip-only" not in args)
+    except ValueError:
+        print(f"Keine gültige IP: {ip}")
+        return False
+    except sources.SourceError as e:
+        print(f"IP {ip} geschützt, ASN konnte nicht ermittelt werden: {e}")
+        return False
+    with db.tx() as c:
+        removed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
+    print(f"Geschützt: {ip}" + "".join(f", AS{a} {sources.asn_name(a)}" for a in asns))
+    if removed:
+        print("Entfernte Sperr-Regeln: " + ", ".join(f"AS{a}" for a in removed))
+    print("Wirksam ab dem nächsten Lauf – in der Oberfläche „Anwenden“ klicken.")
+    return True
+
+
 def main():
     db.init()
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -92,6 +129,8 @@ def main():
             db.put("auth_mode", None, c)
             c.execute("DELETE FROM sessions")
         print("Anmeldung zurückgesetzt. Container neu starten – das neue Setup-Token steht dann im Log.")
+    elif cmd == "protect":
+        sys.exit(0 if protect(sys.argv[2:]) else 1)
     elif cmd == "check-sources":
         sys.exit(0 if check_sources() else 1)
     else:

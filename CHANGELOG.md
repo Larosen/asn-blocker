@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+- **Selbstschutz** gegen versehentliches Aussperren (auch per SSH bei Firewall-Bouncern):
+  - aktive SSH-Sitzungen des Hosts werden automatisch erkannt (`/var/run/utmp` schreibgeschützt eingebunden) und aus allen Sperren herausgeschnitten
+  - geschützte IPs und ASNs: nie gesperrt, auch nicht über Spamhaus oder eine bestätigte Plausibilitätsprüfung; Regeln für geschützte ASNs werden abgelehnt
+  - `docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect` schützt IP und ASN der aktuellen SSH-Verbindung
+  - harte Endkontrolle vor jedem Schreibzugriff: landet eine geschützte IP in einer Sperre, bricht der Lauf ab
+- Lauf-Protokoll fasst Spamhaus-ASNs in einer Zeile zusammen; fehlende ASN-Namen werden beim Lauf ergänzt
+
 ## 0.3.0
 - Oberfläche auf Deutsch und Englisch (automatisch nach Browsersprache, umschaltbar)
 - ASN-Tabelle: Mehrfachauswahl mit Massenaktionen (Blockieren, Captcha, Entfernen)

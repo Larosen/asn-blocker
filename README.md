@@ -68,6 +68,22 @@ Die App erwartet, dass TLS am Proxy endet. Identity-Header und `X-Forwarded-For`
 
 Zugang verloren? `docker exec asn-blocker python -m app.cli reset-auth`, Container neu starten, neues Token aus dem Log.
 
+### Selbstschutz: sich nicht selbst aussperren
+
+Sperrt ein Firewall-Bouncer (nftables/iptables) eine Range, trifft das auch SSH. asn-blocker schützt deshalb:
+
+- **Aktive SSH-Sitzungen automatisch**, wenn `/var/run/utmp` des Hosts schreibgeschützt eingebunden ist
+  (`- /var/run/utmp:/host/utmp:ro`, siehe `docker-compose.yml`). Deren IPs werden bei jedem Lauf aus allen Sperren herausgeschnitten.
+- **Geschützte IPs und ASNs** (Ausnahmen → Selbstschutz). Für geschützte ASNs werden keine Regeln angenommen, auch nicht über
+  Spamhaus. Ihre Prefixe werden nie gesperrt, auch nicht nach einer bestätigten Plausibilitätsprüfung. Da Heimanschlüsse meist
+  wechselnde IPs haben, sollte mindestens der **ASN des eigenen Anschlusses** geschützt sein.
+- Aus der laufenden SSH-Sitzung heraus, ohne Oberfläche:
+  ```bash
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP + ASN dieser Verbindung schützen
+  docker exec asn-blocker python -m app.cli protect --list                  # Übersicht
+  ```
+- Vor jedem Schreibzugriff prüft ein Lauf zusätzlich, dass keine geschützte IP in einer Sperre landet, und bricht sonst ab.
+
 ### Captcha
 
 Captcha-Decisions wirken nur mit einem Bouncer, der Captchas ausliefern kann – z. B. dem

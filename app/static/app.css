@@ -193,3 +193,8 @@ fieldset.continent legend { display: flex; align-items: center; gap: 8px; paddin
 tr[aria-current="true"] td { background: var(--sunken); }
 .side-foot .btn { align-self: flex-start; padding-left: 0; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+
+/* Selbstschutz */
+h3.inline-h { margin: 0; }
+.check-inline { display: inline-flex; gap: 6px; align-items: center; }
+.box > .pad-sm + table, .box > table + .pad-sm { border-top: 1px solid var(--line); }

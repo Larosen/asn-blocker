@@ -13,14 +13,14 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth, crowdsec, db, engine, logs, notify, sources
+from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources
 
 logs.setup()
 log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 @asynccontextmanager
@@ -273,6 +273,10 @@ class AsnRule(BaseModel):
 
 @api.put("/asns")
 def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
+    blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
+    if blocked:
+        raise HTTPException(422, "Selbstschutz: " + ", ".join(f"AS{a}" for a in blocked)
+                            + " ist geschützt und kann nicht gesperrt werden")
     now = time.time()
     with db.tx() as c:
         for r in rules:
@@ -448,6 +452,63 @@ def delete_watch(ip: str, user: str = Depends(require_user)):
     with db.tx() as c:
         c.execute("DELETE FROM watch_ips WHERE ip=?", (ip,))
     db.audit(user, "watch.delete", {"ip": ip})
+    return {"ok": True}
+
+
+# --- Selbstschutz -----------------------------------------------------------------------------------
+
+@api.get("/protect")
+def get_protect(request: Request):
+    sessions, utmp = selfprotect.ssh_sessions()
+    applied = {}
+    for r in db.q("SELECT type, value FROM applied"):
+        applied.setdefault(r["type"], []).append(r["value"])
+    prot_asns = selfprotect.protected_asns()
+    for s in sessions:
+        s["status"] = engine.status_of(s["ip"], applied)
+        try:
+            asns = sources.ip_info(s["ip"])["asns"]
+        except sources.SourceError:
+            asns = []
+        s["asns"] = [{"asn": a, "name": sources.asn_name(a), "protected": a in prot_asns} for a in asns]
+    rows = selfprotect.protected()
+    for r in rows:
+        if r["kind"] == "asn":
+            r["name"] = sources.asn_name(int(r["value"]))
+    ip = auth.client_ip(request)
+    try:
+        ip = ip if ipaddress.ip_address(ip).is_global else None  # lokale Adressen werden ohnehin nie gesperrt
+    except ValueError:
+        ip = None
+    return {"utmp": utmp, "sessions": sessions, "protected": rows, "client_ip": ip}
+
+
+class Protect(BaseModel):
+    ip: str
+    with_asn: bool = True
+    note: str = Field("", max_length=200)
+
+
+@api.post("/protect")
+def add_protect(body: Protect, user: str = Depends(require_user)):
+    try:
+        asns = selfprotect.protect_ip(body.ip.strip(), body.note or f"von {user}", body.with_asn)
+    except ValueError:
+        raise HTTPException(422, "Keine gültige IP-Adresse")
+    except sources.SourceError as e:
+        raise HTTPException(502, str(e))
+    with db.tx() as c:
+        c.executemany("DELETE FROM asn_rules WHERE asn=?", [(a,) for a in asns])
+    db.audit(user, "protect.add", {"ip": body.ip, "asns": asns})
+    return {"ok": True, "asns": asns}
+
+
+@api.delete("/protect/{kind}/{value:path}")
+def delete_protect(kind: str, value: str, user: str = Depends(require_user)):
+    with db.tx() as c:
+        c.execute("DELETE FROM protected WHERE kind=? AND value=?", (kind, value))
+        db.bump_rev(c)
+    db.audit(user, "protect.delete", {"kind": kind, "value": value})
     return {"ok": True}
 
 
