@@ -91,7 +91,7 @@ def test_rules_crud_and_validation(client):
     assert exp["asns"][0]["asn"] == 24940 and len(exp["vpn"]) == 2
 
 
-def test_parse_bash_list(client):
+def test_parse_pasted_list(client):
     setup_local(client)
     text = "ASN_LIST=(\n  15169    # Google\n # 13335    # Cloudflare\n  AS8075 Microsoft\n)"
     r = client.post("/api/asns/parse", headers=H, json={"text": text, "action": "ban"}).json()

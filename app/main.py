@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 
 
 @asynccontextmanager
@@ -362,7 +362,7 @@ ASN_LINE = re.compile(r"^\s*(?:AS)?(\d{1,10})\b[\s,;]*(?:#\s*)?(.*)$", re.I)
 
 @api.post("/asns/parse")
 def parse_asns(body: AsnImport):
-    """Free text (e.g. ASN_LIST from the bash script) -> preview. Commented-out lines are ignored."""
+    """Free text, one ASN per line with an optional comment -> preview. Commented-out lines are ignored."""
     out = []
     for line in body.text.splitlines():
         if line.strip().startswith("#"):
@@ -666,7 +666,7 @@ class Cleanup(BaseModel):
 
 @api.post("/crowdsec/cleanup")
 def cleanup(body: Cleanup, user: str = Depends(require_user)):
-    """Remove decisions created by an old script (e.g. 'Auto-Block via ASN Bulk')."""
+    """Remove decisions that other tools or scripts added via cscli, selected by their reason (scenario)."""
     if body.reason in engine.REASONS.values():
         raise HTTPException(422, "Decisions owned by asn-blocker are managed through runs")
     try:

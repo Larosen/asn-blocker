@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 (2026-10-16)
+- README rewritten for new users: requirements, installation, access options, usage, safeguards, operations, troubleshooting
+- Maintenance: removing decisions of other tools needs an explicit reason (no pre-filled value) and explains that only `cscli` decisions are affected
+
 ## 0.5.1 (2026-10-16) – security hardening
 Result of a full security review (auth, injection/SSRF, frontend, container and supply chain).
 - **Sign-in:** the login throttle counts attempts before the password check (parallel requests could run ~9× the
@@ -63,7 +67,7 @@ Result of a full security review (auth, injection/SSRF, frontend, container and 
 - Local ASN search (bgp.tools), ASN sizes, type warning for eyeball (end-user) networks
 - VPN: added IVPN, PIA, AirVPN; exact IPs by default instead of /24
 - Optional Spamhaus ASN-DROP
-- New UI without a build step; import of the ASN list from the bash script
+- New UI without a build step; ASN lists can be pasted
 - Image: non-root, read-only capable, healthcheck; CI with tests, Trivy, SBOM and provenance
 
 ## 0.1.0
