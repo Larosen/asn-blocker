@@ -1,4 +1,4 @@
-"""Netz-Arithmetik: Ausnahmen aus Ranges herausschneiden."""
+"""Network arithmetic: cut exemptions out of ranges."""
 import bisect
 import ipaddress
 
@@ -20,7 +20,7 @@ def collapse(nets):
 
 
 def subtract(source, exempt):
-    """source minus exempt, Ergebnis zusammengefasst."""
+    """source minus exempt, result collapsed."""
     exempt = collapse(exempt)
     result = []
     for ver in (4, 6):

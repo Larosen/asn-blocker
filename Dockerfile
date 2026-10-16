@@ -11,7 +11,7 @@ FROM base
 COPY --from=deps /install /usr/local
 WORKDIR /srv
 COPY app ./app
-# pip wird zur Laufzeit nicht gebraucht und bringt eigene, oft veraltete Pakete mit (pip/_vendor)
+# pip is not needed at runtime and ships its own, often outdated packages (pip/_vendor)
 RUN python -m pip uninstall -y pip \
  && useradd --uid 10001 --no-create-home --home-dir /data --shell /usr/sbin/nologin asnb \
  && mkdir -p /data && chown 10001:10001 /data
@@ -21,5 +21,5 @@ VOLUME /data
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"]
-# Genau ein Worker: der Scheduler laeuft im Prozess
+# Exactly one worker: the scheduler runs in-process
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-server-header"]

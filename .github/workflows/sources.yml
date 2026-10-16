@@ -1,6 +1,6 @@
 name: sources
-# Prueft alle externen Datenquellen (RIPEstat, bgp.tools, Spamhaus, VPN-Anbieter) live,
-# damit Format- oder API-Aenderungen auffallen, bevor ein Lauf in Produktion scheitert.
+# Checks all external data sources (RIPEstat, bgp.tools, Spamhaus, VPN providers) live,
+# so format or API changes are caught before a production run fails.
 on:
   pull_request:
     paths: ["app/sources.py", "app/cli.py", "app/data/**", ".github/workflows/sources.yml"]
@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements.txt
-      - name: Quellen live pruefen
+      - name: Check sources live
         env:
           DATA_DIR: ${{ runner.temp }}/asnb
         run: python -m app.cli check-sources

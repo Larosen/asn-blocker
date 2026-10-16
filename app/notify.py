@@ -20,4 +20,4 @@ def send(title, message, level="error"):
         else:
             httpx.post(url, json={"title": title, "message": message, "level": level, "source": "asn-blocker"}, timeout=15)
     except httpx.HTTPError as e:
-        logging.getLogger("asn_blocker.notify").warning("Benachrichtigung fehlgeschlagen: %s", e)
+        logging.getLogger("asn_blocker.notify").warning("Notification failed: %s", e)

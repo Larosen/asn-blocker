@@ -1,4 +1,4 @@
-"""Gegen eine echte CrowdSec-LAPI: CROWDSEC_LAPI_URL, CROWDSEC_MACHINE_ID, CROWDSEC_PASSWORD setzen."""
+"""Runs against a real CrowdSec LAPI: set CROWDSEC_LAPI_URL, CROWDSEC_MACHINE_ID, CROWDSEC_PASSWORD."""
 import os
 
 import pytest
@@ -6,7 +6,7 @@ import pytest
 from app import crowdsec
 
 URL = os.environ.get("CROWDSEC_LAPI_URL")
-pytestmark = pytest.mark.skipif(not URL, reason="keine LAPI konfiguriert")
+pytestmark = pytest.mark.skipif(not URL, reason="no LAPI configured")
 
 
 def test_roundtrip():

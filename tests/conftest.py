@@ -21,7 +21,7 @@ def fresh_db(monkeypatch, tmp_path):
 
 
 class FakeBackend:
-    """Verhaelt sich wie die LAPI: Decisions mit ID, Ablaufzeit, Scenario."""
+    """Behaves like the LAPI: decisions with ID, expiry time and scenario."""
 
     def __init__(self):
         self.decisions, self.next_id, self.calls = [], 1, []

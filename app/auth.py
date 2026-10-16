@@ -1,4 +1,4 @@
-"""Authentifizierung: Proxy-Header (SSO davor) oder lokaler Login. Plus Ersteinrichtungs-Token."""
+"""Authentication: proxy header (SSO in front) or local login. Plus the initial setup token."""
 import hashlib
 import hmac
 import ipaddress
@@ -15,7 +15,7 @@ SETUP_TOKEN = secrets.token_urlsafe(18)
 _failed: dict[str, list[float]] = {}
 
 
-# --- Passwoerter (scrypt aus der Standardbibliothek) ----------------------------------------------
+# --- Passwords (scrypt from the standard library) ----------------------------------------------
 
 def hash_password(pw: str) -> str:
     salt = secrets.token_bytes(16)
@@ -32,7 +32,7 @@ def verify_password(pw: str, stored: str | None) -> bool:
         return False
 
 
-# --- Netz / Client-IP ---------------------------------------------------------------------------------
+# --- Network / client IP ---------------------------------------------------------------------------------
 
 def ip_in(ip: str, nets) -> bool:
     try:
@@ -51,7 +51,7 @@ def peer_ip(request: Request) -> str:
 
 
 def client_ip(request: Request) -> str:
-    """Echte Client-IP: X-Forwarded-For nur auswerten, wenn der direkte Peer ein vertrauenswuerdiger Proxy ist."""
+    """Real client IP: only evaluate X-Forwarded-For if the direct peer is a trusted proxy."""
     peer = peer_ip(request)
     if not _trusted(peer):
         return peer
@@ -93,19 +93,19 @@ def drop_all_sessions():
 
 
 def throttle(ip):
-    """Max. 5 Fehlversuche je 15 min und IP."""
+    """At most 5 failed attempts per 15 min and IP."""
     now = time.time()
     tries = [t for t in _failed.get(ip, []) if now - t < 900]
     _failed[ip] = tries
     if len(tries) >= 5:
-        raise HTTPException(429, "Zu viele Fehlversuche, bitte später erneut versuchen")
+        raise HTTPException(429, "Too many failed attempts, please try again later")
 
 
 def record_failure(ip):
     _failed.setdefault(ip, []).append(time.time())
 
 
-# --- Request-Pruefung ----------------------------------------------------------------------------------------
+# --- Request checks ------------------------------------------------------------------------------------------
 
 def current_user(request: Request) -> str | None:
     mode = db.get("auth_mode")
@@ -126,4 +126,4 @@ def check_setup_token(token: str, ip: str):
     throttle(ip)
     if not hmac.compare_digest(token or "", SETUP_TOKEN):
         record_failure(ip)
-        raise HTTPException(403, "Setup-Token falsch (steht im Container-Log)")
+        raise HTTPException(403, "Wrong setup token (see the container log)")

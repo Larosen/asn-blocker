@@ -20,7 +20,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 
 @asynccontextmanager
@@ -29,7 +29,7 @@ async def lifespan(_app):
     with db.tx() as c:
         c.execute("UPDATE runs SET status='failed', finished_at=? WHERE status='running'", (time.time(),))
     if not db.get("auth_mode"):
-        log.warning("Ersteinrichtung: Setup-Token = %s", auth.SETUP_TOKEN)
+        log.warning("Initial setup: setup token = %s", auth.SETUP_TOKEN)
     threading.Thread(target=engine.scheduler, daemon=True, name="scheduler").start()
     yield
 
@@ -43,17 +43,17 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' 
 
 @app.middleware("http")
 async def guard(request: Request, call_next):
-    # CSRF: aendernde Requests nur mit eigenem Header (erzwingt CORS-Preflight) und passendem Origin
+    # CSRF: state-changing requests require a custom header (forces a CORS preflight) and a matching Origin
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
         if request.headers.get("x-requested-with") != "asn-blocker":
-            return JSONResponse({"detail": "CSRF-Header fehlt"}, 403)
+            return JSONResponse({"detail": "Missing CSRF header"}, 403)
         origin = request.headers.get("origin")
         if origin:
             host = request.headers.get("host", "")
             if auth._trusted(auth.peer_ip(request)):
                 host = request.headers.get("x-forwarded-host", host)
             if urlsplit(origin).netloc != host.split(",")[0].strip():
-                return JSONResponse({"detail": "Origin passt nicht"}, 403)
+                return JSONResponse({"detail": "Origin mismatch"}, 403)
     resp = await call_next(request)
     h = resp.headers
     h["Content-Security-Policy"] = CSP
@@ -69,10 +69,10 @@ async def guard(request: Request, call_next):
 
 def require_user(request: Request) -> str:
     if not db.get("auth_mode"):
-        raise HTTPException(409, "Ersteinrichtung nicht abgeschlossen")
+        raise HTTPException(409, "Initial setup not completed")
     user = auth.current_user(request)
     if not user:
-        raise HTTPException(401, "Nicht angemeldet")
+        raise HTTPException(401, "Not signed in")
     return user
 
 
@@ -91,7 +91,7 @@ def healthz():
     return {"ok": True}
 
 
-# --- Sitzung / Ersteinrichtung --------------------------------------------------------------------
+# --- Session / initial setup ----------------------------------------------------------------------
 
 @pub.get("/session")
 def session(request: Request):
@@ -118,19 +118,19 @@ class SetupAuth(BaseModel):
 @pub.post("/setup/auth")
 def setup_auth(s: SetupAuth, request: Request, response: Response):
     if db.get("auth_mode"):
-        raise HTTPException(409, "Bereits eingerichtet")
+        raise HTTPException(409, "Already set up")
     auth.check_setup_token(s.token, auth.peer_ip(request))
     if s.mode == "proxy":
         if not s.trusted_proxies:
-            raise HTTPException(422, "Mindestens ein vertrauenswürdiger Proxy (IP/CIDR) nötig")
+            raise HTTPException(422, "At least one trusted proxy (IP/CIDR) is required")
         peer = auth.peer_ip(request)
         if not auth.ip_in(peer, s.trusted_proxies) or not request.headers.get(s.user_header):
-            raise HTTPException(422, f"Diese Anfrage kam von {peer} "
-                                     f"{'mit' if request.headers.get(s.user_header) else 'ohne'} Header {s.user_header}. "
-                                     "Mit diesen Einstellungen würdest du dich aussperren. "
-                                     "Rufe die Einrichtung über den Reverse Proxy mit SSO auf.")
+            raise HTTPException(422, f"This request came from {peer} "
+                                     f"{'with' if request.headers.get(s.user_header) else 'without'} header {s.user_header}. "
+                                     "These settings would lock you out. "
+                                     "Open the setup through the reverse proxy with SSO.")
     elif len(s.password) < 12:
-        raise HTTPException(422, "Passwort: mindestens 12 Zeichen")
+        raise HTTPException(422, "Password: at least 12 characters")
     with db.tx() as c:
         db.put("auth_mode", s.mode, c)
         db.put("auth_user_header", s.user_header, c)
@@ -158,12 +158,12 @@ class Login(BaseModel):
 @pub.post("/login")
 def login(body: Login, request: Request, response: Response):
     if db.get("auth_mode") != "local":
-        raise HTTPException(400, "Lokaler Login ist nicht aktiv")
+        raise HTTPException(400, "Local login is not enabled")
     ip = auth.client_ip(request)
     auth.throttle(ip)
     if body.username != db.get("local_user") or not auth.verify_password(body.password, db.get("local_password_hash")):
         auth.record_failure(ip)
-        raise HTTPException(401, "Benutzername oder Passwort falsch")
+        raise HTTPException(401, "Wrong username or password")
     _set_cookie(response, request, auth.create_session(body.username))
     db.audit(body.username, "login", {"ip": ip})
     return {"ok": True}
@@ -184,14 +184,14 @@ class Password(BaseModel):
 @api.put("/account/password")
 def change_password(body: Password, user: str = Depends(require_user)):
     if db.get("auth_mode") != "local" or not auth.verify_password(body.current, db.get("local_password_hash")):
-        raise HTTPException(400, "Aktuelles Passwort falsch")
+        raise HTTPException(400, "Current password is wrong")
     db.put("local_password_hash", auth.hash_password(body.new))
     auth.drop_all_sessions()
     db.audit(user, "account.password")
     return {"ok": True}
 
 
-# --- Uebersicht ------------------------------------------------------------------------------------
+# --- Overview --------------------------------------------------------------------------------------
 
 def _run_row(r):
     if r and r.get("summary"):
@@ -258,7 +258,7 @@ def list_asns():
 
 @api.post("/asns/stats")
 def load_stats():
-    """Prefix-Zahlen fuer alle Regeln laden (gecacht), damit die UI Groessen zeigen kann."""
+    """Load prefix counts for all rules (cached) so the UI can show sizes."""
     asns = [r["asn"] for r in db.q("SELECT asn FROM asn_rules")]
     _src(sources.prefixes_many, asns)
     return {a: _prefix_stats(a) for a in asns}
@@ -275,8 +275,8 @@ class AsnRule(BaseModel):
 def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
     blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
     if blocked:
-        raise HTTPException(422, "Selbstschutz: " + ", ".join(f"AS{a}" for a in blocked)
-                            + " ist geschützt und kann nicht gesperrt werden")
+        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
+                            + " is protected and cannot be blocked")
     now = time.time()
     with db.tx() as c:
         for r in rules:
@@ -321,7 +321,7 @@ ASN_LINE = re.compile(r"^\s*(?:AS)?(\d{1,10})\b[\s,;]*(?:#\s*)?(.*)$", re.I)
 
 @api.post("/asns/parse")
 def parse_asns(body: AsnImport):
-    """Freitext (z.B. ASN_LIST aus dem Bash-Skript) -> Vorschau. Auskommentierte Zeilen werden ignoriert."""
+    """Free text (e.g. ASN_LIST from the bash script) -> preview. Commented-out lines are ignored."""
     out = []
     for line in body.text.splitlines():
         if line.strip().startswith("#"):
@@ -349,7 +349,7 @@ def providers():
 def _provider(pid):
     p = sources.PROVIDERS.get(pid)
     if not p:
-        raise HTTPException(404, "Unbekannter Anbieter")
+        raise HTTPException(404, "Unknown provider")
     return p
 
 
@@ -367,7 +367,7 @@ class VpnSel(BaseModel):
     def _cc(cls, v):
         v = sorted({c.upper() for c in v})
         if any(not re.fullmatch(r"[A-Z]{2}", c) for c in v):
-            raise ValueError("Ländercodes müssen zweistellig sein")
+            raise ValueError("Country codes must have two letters")
         return v
 
 
@@ -385,7 +385,7 @@ def put_vpn(pid: str, sel: VpnSel, user: str = Depends(require_user)):
     return {"ok": True}
 
 
-# --- Ausnahmen & Waechter-IPs ----------------------------------------------------------------------
+# --- Exemptions & watch IPs ------------------------------------------------------------------------
 
 class Exemption(BaseModel):
     kind: Literal["asn", "cidr"]
@@ -408,7 +408,7 @@ def add_exemption(e: Exemption, user: str = Depends(require_user)):
         value = str(int(e.value.upper().removeprefix("AS"))) if e.kind == "asn" else \
             str(ipaddress.ip_network(e.value.strip(), strict=False))
     except ValueError:
-        raise HTTPException(422, f"Ungültig: {e.value}")
+        raise HTTPException(422, f"Invalid: {e.value}")
     with db.tx() as c:
         c.execute("INSERT OR REPLACE INTO exemptions VALUES(?,?,?)", (e.kind, value, e.note))
         db.bump_rev(c)
@@ -440,7 +440,7 @@ def add_watch(w: Watch, user: str = Depends(require_user)):
     try:
         ip = str(ipaddress.ip_address(w.ip.strip()))
     except ValueError:
-        raise HTTPException(422, f"Keine gültige IP: {w.ip}")
+        raise HTTPException(422, f"Not a valid IP: {w.ip}")
     with db.tx() as c:
         c.execute("INSERT OR REPLACE INTO watch_ips(ip,note) VALUES(?,?)", (ip, w.note))
     db.audit(user, "watch.add", {"ip": ip})
@@ -455,7 +455,7 @@ def delete_watch(ip: str, user: str = Depends(require_user)):
     return {"ok": True}
 
 
-# --- Selbstschutz -----------------------------------------------------------------------------------
+# --- Self-protection --------------------------------------------------------------------------------
 
 @api.get("/protect")
 def get_protect(request: Request):
@@ -477,7 +477,7 @@ def get_protect(request: Request):
             r["name"] = sources.asn_name(int(r["value"]))
     ip = auth.client_ip(request)
     try:
-        ip = ip if ipaddress.ip_address(ip).is_global else None  # lokale Adressen werden ohnehin nie gesperrt
+        ip = ip if ipaddress.ip_address(ip).is_global else None  # local addresses are never blocked anyway
     except ValueError:
         ip = None
     return {"utmp": utmp, "sessions": sessions, "protected": rows, "client_ip": ip}
@@ -492,9 +492,9 @@ class Protect(BaseModel):
 @api.post("/protect")
 def add_protect(body: Protect, user: str = Depends(require_user)):
     try:
-        asns = selfprotect.protect_ip(body.ip.strip(), body.note or f"von {user}", body.with_asn)
+        asns = selfprotect.protect_ip(body.ip.strip(), body.note or f"by {user}", body.with_asn)
     except ValueError:
-        raise HTTPException(422, "Keine gültige IP-Adresse")
+        raise HTTPException(422, "Not a valid IP address")
     except sources.SourceError as e:
         raise HTTPException(502, str(e))
     with db.tx() as c:
@@ -517,10 +517,10 @@ def check(ip: str):
     try:
         return engine.check_ip(ip)
     except ValueError:
-        raise HTTPException(422, "Keine gültige IP-Adresse")
+        raise HTTPException(422, "Not a valid IP address")
 
 
-# --- Einstellungen ---------------------------------------------------------------------------------------
+# --- Settings --------------------------------------------------------------------------------------------
 
 PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
                    "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header", "auth_mode",
@@ -552,10 +552,10 @@ class Settings(BaseModel):
 @api.put("/settings")
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
     if s.decision_hours < s.interval_hours * 2:
-        raise HTTPException(422, "Decision-Dauer muss mindestens das Doppelte des Intervalls sein")
+        raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
         if not auth.ip_in(auth.peer_ip(request), s.trusted_proxies) or not request.headers.get(s.auth_user_header):
-            raise HTTPException(422, "Mit diesen Proxy-Einstellungen würdest du dich aussperren")
+            raise HTTPException(422, "These proxy settings would lock you out")
     affects = {k: db.get(k) for k in ("include_ipv6", "spamhaus_asndrop")} != \
         {"include_ipv6": s.include_ipv6, "spamhaus_asndrop": s.spamhaus_asndrop}
     with db.tx() as c:
@@ -570,8 +570,8 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
 @api.post("/notify/test")
 def notify_test():
     if not db.get("notify_url"):
-        raise HTTPException(400, "Keine Benachrichtigungs-URL gespeichert")
-    notify.send("asn-blocker: Test", "Benachrichtigungen funktionieren.", "info")
+        raise HTTPException(400, "No notification URL saved")
+    notify.send("asn-blocker: Test", "Notifications are working.", "info")
     return {"ok": True}
 
 
@@ -579,7 +579,7 @@ class CrowdSecCfg(BaseModel):
     mode: Literal["lapi", "docker"]
     lapi_url: str = Field("http://crowdsec:8080", pattern=r"^https?://[^\s/]+(:\d+)?/?$")
     machine_id: str = Field("", max_length=128)
-    password: str = Field("", max_length=512)   # leer = bisheriges behalten
+    password: str = Field("", max_length=512)   # empty = keep the current one
     container: str = Field("crowdsec", pattern=r"^[\w.-]{1,128}$")
 
 
@@ -607,9 +607,9 @@ class Cleanup(BaseModel):
 
 @api.post("/crowdsec/cleanup")
 def cleanup(body: Cleanup, user: str = Depends(require_user)):
-    """Decisions eines alten Skripts (z.B. 'Auto-Block via ASN Bulk') entfernen."""
+    """Remove decisions created by an old script (e.g. 'Auto-Block via ASN Bulk')."""
     if body.reason in engine.REASONS.values():
-        raise HTTPException(422, "Eigene Decisions werden über Läufe verwaltet")
+        raise HTTPException(422, "Decisions owned by asn-blocker are managed through runs")
     try:
         n = crowdsec.backend().delete_scenario(body.reason)
     except crowdsec.CrowdSecError as e:
@@ -618,7 +618,7 @@ def cleanup(body: Cleanup, user: str = Depends(require_user)):
     return {"deleted": n}
 
 
-# --- Laeufe --------------------------------------------------------------------------------------------------
+# --- Runs ----------------------------------------------------------------------------------------------------
 
 class RunReq(BaseModel):
     kind: Literal["plan", "apply"]
@@ -628,9 +628,9 @@ class RunReq(BaseModel):
 @api.post("/runs")
 def start_run(body: RunReq, user: str = Depends(require_user)):
     if engine.is_running():
-        raise HTTPException(409, "Es läuft bereits ein Lauf")
+        raise HTTPException(409, "A run is already in progress")
     if body.kind == "apply" and not db.get("crowdsec_mode"):
-        raise HTTPException(409, "CrowdSec-Verbindung ist noch nicht eingerichtet")
+        raise HTTPException(409, "CrowdSec connection is not set up yet")
 
     def go():
         try:

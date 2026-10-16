@@ -1,12 +1,12 @@
-# Sicherheit
+# Security
 
-Sicherheitslücken bitte **nicht** als öffentliches Issue melden, sondern über
-[GitHub Security Advisories](https://github.com/larosen/asn-blocker/security/advisories/new).
+Please do **not** report vulnerabilities as public issues; use
+[GitHub Security Advisories](https://github.com/larosen/asn-blocker/security/advisories/new) instead.
 
-## Bedrohungsmodell (Kurzfassung)
+## Threat model (short version)
 
-- Die Oberfläche kann die Sperrlisten von CrowdSec verändern. Sie gehört hinter SSO oder den eingebauten Login und sollte nicht direkt im Internet stehen.
-- Im empfohlenen LAPI-Modus hat der Container keinen Zugriff auf den Docker-Socket. Eine Übernahme der App erlaubt Änderungen an
-  CrowdSec-Decisions, aber keinen Zugriff auf den Host.
-- Externe Quellen (RIPEstat, VPN-Anbieter, Spamhaus) werden als nicht vertrauenswürdig behandelt: nur öffentliche Adressen werden
-  übernommen, Fehler brechen den Lauf vor dem Schreiben ab, große Änderungen brauchen eine Bestätigung.
+- The UI can modify CrowdSec's blocklists. It belongs behind SSO or the built-in login and should not be exposed directly to the internet.
+- In the recommended LAPI mode, the container has no access to the Docker socket. Taking over the app allows changes to
+  CrowdSec decisions, but no access to the host.
+- External sources (RIPEstat, VPN providers, Spamhaus) are treated as untrusted: only public addresses are
+  accepted, errors abort the run before anything is written, and large changes require confirmation.

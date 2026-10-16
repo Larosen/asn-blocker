@@ -19,7 +19,7 @@ def env(monkeypatch):
             return [("DE", "Germany", "10.0.5.9"), ("NO", "Norway", "10.0.6.9")]
 
     monkeypatch.setitem(sources.PROVIDERS, "nordvpn", P())
-    monkeypatch.setattr(sources, "_public_ip", lambda v: v)  # Testnetze sind nicht "global"
+    monkeypatch.setattr(sources, "_public_ip", lambda v: v)  # test networks are not "global"
     be = FakeBackend()
     monkeypatch.setattr(crowdsec, "backend", lambda: be)
     monkeypatch.setattr(engine.notify, "send", lambda *a, **k: None)
@@ -44,13 +44,13 @@ def test_apply_carves_exemptions_and_separates_types(env):
     assert last_run()["status"] == "ok", last_run()["log"]
     ban, cap = applied("ban"), applied("captcha")
     assert "10.0.5.9" not in str(ban)
-    assert engine.status_of("10.0.5.9", {"ban": list(ban)}) is None       # VPN exakt ausgenommen
-    assert engine.status_of("10.0.5.10", {"ban": list(ban)}) == "ban"     # Nachbar-IP bleibt gesperrt
-    assert engine.status_of("10.0.7.1", {"ban": list(ban)}) is None       # Ausnahme-ASN
-    assert engine.status_of("10.1.2.3", {"captcha": list(cap)}) is None   # manuelle Ausnahme
-    assert engine.status_of("10.0.1.1", {"captcha": list(cap)}) is None   # Captcha nicht unter Ban
+    assert engine.status_of("10.0.5.9", {"ban": list(ban)}) is None       # VPN exempted exactly
+    assert engine.status_of("10.0.5.10", {"ban": list(ban)}) == "ban"     # neighbouring IP stays blocked
+    assert engine.status_of("10.0.7.1", {"ban": list(ban)}) is None       # exempt ASN
+    assert engine.status_of("10.1.2.3", {"captcha": list(cap)}) is None   # manual exemption
+    assert engine.status_of("10.0.1.1", {"captcha": list(cap)}) is None   # no captcha under ban
     assert engine.status_of("10.200.0.1", {"captcha": list(cap)}) == "captcha"
-    assert not any(":" in v for v in ban | cap)                            # IPv6 aus
+    assert not any(":" in v for v in ban | cap)                            # IPv6 off
     assert {d["value"] for d in env.decisions if d["type"] == "ban"} == ban
 
 
@@ -58,7 +58,7 @@ def test_second_run_is_noop_then_diff(env):
     engine.run("apply", "test")
     env.calls.clear()
     engine.run("apply", "test")
-    assert env.calls == [], "unveränderter Stand darf nichts schreiben"
+    assert env.calls == [], "unchanged state must not write anything"
     with db.tx() as c:
         c.execute("DELETE FROM exemptions WHERE kind='asn'")
     db.put("sanity_percent", 100)
@@ -82,7 +82,7 @@ def test_add_happens_before_delete(env):
 def test_expiring_decisions_are_refreshed(env):
     engine.run("apply", "test")
     for d in env.decisions:
-        d["until"] = time.time() + 3600  # laeuft vor dem naechsten Lauf ab
+        d["until"] = time.time() + 3600  # expires before the next run
     engine.run("apply", "test")
     assert all(d["until"] > time.time() + 86400 for d in env.decisions)
     assert len(env.decisions) == len(applied("ban")) + len(applied("captcha"))
@@ -119,7 +119,7 @@ def test_watch_ip_hit(env):
         c.execute("INSERT INTO watch_ips(ip) VALUES('10.0.9.9'),('10.0.5.9')")
     engine.run("apply", "test")
     st = {r["ip"]: r["last_status"] for r in db.q("SELECT * FROM watch_ips")}
-    assert st == {"10.0.9.9": "ban", "10.0.5.9": "frei"}
+    assert st == {"10.0.9.9": "ban", "10.0.5.9": "clear"}
 
 
 def test_plan_does_not_write(env):
@@ -140,7 +140,7 @@ def test_go_duration():
 
 
 def test_unreachable_lapi_raises_crowdsec_error():
-    with pytest.raises(crowdsec.CrowdSecError, match="nicht erreichbar"):
+    with pytest.raises(crowdsec.CrowdSecError, match="not reachable"):
         crowdsec.Lapi("http://127.0.0.1:1", "m", "p").test()
 
 
@@ -157,7 +157,7 @@ def test_preview_counts_against_applied(env):
         db.bump_rev(c)
     p = engine.preview()
     assert p["captcha"]["total"] == 0 and p["captcha"]["remove"] > 0
-    assert env.decisions == before  # Vorschau schreibt nichts nach CrowdSec
+    assert env.decisions == before  # preview writes nothing to CrowdSec
 
 
 def test_countries_have_continent(env):
@@ -173,10 +173,10 @@ def test_json_logging(capsys, monkeypatch):
 
     monkeypatch.setenv("LOG_FORMAT", "json")
     logs.setup()
-    logging.getLogger("asn_blocker.test").info("hallo %s", "welt", extra={"run_id": 7})
+    logging.getLogger("asn_blocker.test").info("hello %s", "world", extra={"run_id": 7})
     line = capsys.readouterr().out.strip().splitlines()[-1]
     data = json.loads(line)
-    assert data["msg"] == "hallo welt" and data["run_id"] == 7 and data["level"] == "info"
+    assert data["msg"] == "hello world" and data["run_id"] == 7 and data["level"] == "info"
     monkeypatch.setenv("LOG_FORMAT", "text")
     logs.setup()
 
@@ -189,5 +189,5 @@ def test_dns_failure_is_reported(monkeypatch):
             return [("DE", "Germany", "de-fra.prod.example.com")]
 
     monkeypatch.setattr(sources, "_resolve", lambda h: [])
-    with pytest.raises(sources.SourceError, match="DNS-Auflösung"):
+    with pytest.raises(sources.SourceError, match="DNS resolution"):
         S().ips("DE")
