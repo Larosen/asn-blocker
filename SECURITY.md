@@ -14,7 +14,7 @@ Only the latest release (`:latest` and the newest `x.y` tag) receives security f
 - **What a compromised app could do:** it holds CrowdSec *machine* credentials. With those, decisions can be added or
   removed directly at the LAPI – self-protection is enforced by the app, not by CrowdSec, so a firewall bouncer could
   then also lock out SSH. The app also sees the SSH user names and source IPs from the mounted utmp, and can reach
-  every service on the Docker networks it is attached to (see README, *Network isolation*). In the recommended LAPI
+  every service on the Docker networks it is attached to (see README, *Security → Network isolation*). In the recommended LAPI
   mode it has no Docker socket and no access to the host. In legacy Docker socket mode, a compromise means root on the host.
 - **Proxy authentication** trusts the username header only from the configured proxy IPs. The proxy must strip that
   header from client requests and set it itself; trust a single proxy address, never a whole shared Docker network.

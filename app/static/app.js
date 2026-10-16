@@ -392,7 +392,7 @@ async function viewAsns(el) {
     }))));
   }
 
-  // Paste a list (e.g. ASN_LIST from the bash script)
+  // Paste a list: one ASN per line, optional comment
   $("#paste").onclick = guard(async () => {
     const v = await dialog({ title: t("Paste list"), body: `<p class="small muted">${t("One ASN per line, optionally with a comment:")} <code>16509   # Amazon AWS</code>. ${t("Commented-out lines are skipped.")}</p>
       <label class="field"><span class="sr-only">${t("ASN list")}</span><textarea id="paste-text" placeholder="15169    # Google&#10;AS8075 Microsoft"></textarea></label>
@@ -621,9 +621,9 @@ async function viewSettings(el) {
     <div class="row"><a class="btn" href="/api/export" download="asn-blocker.json">${t("Export configuration")}</a>
       <label class="btn">${t("Import configuration")}<input type="file" id="imp" accept="application/json" class="sr-only"></label>
       <a class="btn" href="/api/ranges/ban.txt">${t("Active ban ranges")}</a><a class="btn" href="/api/ranges/captcha.txt">${t("Active captcha ranges")}</a></div>
-    <h3 class="mt">${t("Remove old decisions")}</h3>
-    <p class="small muted">${t("asn-blocker does not touch decisions of the old bash script. Remove them here after the first successful run.")}</p>
-    <form class="row" id="cleanup"><input type="text" name="reason" value="Auto-Block via ASN Bulk" class="mono" aria-label="Reason"><button class="btn danger">${t("Remove")}</button></form>
+    <h3 class="mt">${t("Remove decisions of other tools")}</h3>
+    <p class="small muted">${t("Remove decisions that other tools or scripts added via cscli, by their reason. CrowdSec's own detections and blocklists are never touched.")}</p>
+    <form class="row" id="cleanup"><input type="text" name="reason" class="mono" required minlength="3" placeholder="${t("Reason, e.g. my-old-blocklist")}" aria-label="${t("Reason")}"><button class="btn danger">${t("Remove")}</button></form>
   </div></div>`;
 
   const cs = $("#cs");
@@ -662,7 +662,7 @@ async function viewSettings(el) {
   $("#cleanup").onsubmit = guard(async (e) => {
     e.preventDefault();
     const reason = e.target.reason.value.trim();
-    if (!(await confirmDlg(t("Remove old decisions"), t("All decisions with reason {r} will be deleted from CrowdSec.", { r: `<code>${esc(reason)}</code>` }), t("Remove"), "danger"))) return;
+    if (!(await confirmDlg(t("Remove old decisions"), t("All decisions with reason {r} that were added via cscli will be deleted from CrowdSec.", { r: `<code>${esc(reason)}</code>` }), t("Remove"), "danger"))) return;
     const r = await api("/crowdsec/cleanup", { method: "POST", body: { reason } });
     toast(t("{n} decisions removed", { n: r.deleted }));
   });
