@@ -1,4 +1,4 @@
-"""SQLite-Speicher: Regeln, Einstellungen, Laeufe, Audit, Caches. Eine Datei in DATA_DIR."""
+"""SQLite storage: rules, settings, runs, audit, caches. One file in DATA_DIR."""
 import json
 import os
 import sqlite3
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS vpn_rules (provider TEXT NOT NULL, country TEXT NOT N
 CREATE TABLE IF NOT EXISTS exemptions (
   kind TEXT NOT NULL CHECK (kind IN ('asn','cidr')), value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (kind, value));
--- Selbstschutz: IPs/ASNs, die nie gesperrt werden duerfen
+-- Self-protection: IPs/ASNs that must never be blocked
 CREATE TABLE IF NOT EXISTS protected (kind TEXT NOT NULL CHECK (kind IN ('asn','ip')), value TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, PRIMARY KEY (kind, value));
 CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', last_status TEXT);
@@ -28,9 +28,9 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at REAL NOT NULL, finished_at REAL, summary TEXT, log TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS run_changes (run_id INTEGER NOT NULL, op TEXT NOT NULL, type TEXT NOT NULL, value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS run_changes_run ON run_changes(run_id);
--- zuletzt angewendeter Soll-Zustand (fuer IP-Pruefer, Downloads, Lockout-Warnung)
+-- last applied target state (for IP checker, downloads, lockout warning)
 CREATE TABLE IF NOT EXISTS applied (type TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (type, value));
--- Ausnahmen mit Herkunft aus dem letzten Lauf
+-- exemptions with their origin from the last run
 CREATE TABLE IF NOT EXISTS exempt_index (cidr TEXT NOT NULL, label TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, user TEXT NOT NULL,
   action TEXT NOT NULL, detail TEXT);
@@ -57,7 +57,7 @@ def conn() -> sqlite3.Connection:
 
 @contextmanager
 def tx():
-    """Schreibtransaktion; serialisiert ueber einen Prozess-Lock."""
+    """Write transaction; serialized via a process lock."""
     with _write_lock:
         c = conn()
         c.execute("BEGIN IMMEDIATE")
@@ -88,12 +88,12 @@ def init():
     _migrate_prototype()
 
 
-# --- Einstellungen ----------------------------------------------------------------
+# --- Settings --------------------------------------------------------------------
 
 DEFAULTS = {
     "auth_mode": None,               # 'proxy' | 'local'
     "auth_user_header": "Remote-User",
-    "trusted_proxies": [],           # CIDRs, aus denen Proxy-Header akzeptiert werden
+    "trusted_proxies": [],           # CIDRs from which proxy headers are accepted
     "local_user": "admin",
     "local_password_hash": None,
     "crowdsec_mode": None,           # 'lapi' | 'docker'
@@ -102,13 +102,13 @@ DEFAULTS = {
     "lapi_password": "",
     "docker_container": "crowdsec",
     "interval_hours": 48,
-    "decision_hours": 168,           # 7 Tage; Decisions werden vor Ablauf erneuert
+    "decision_hours": 168,           # 7 days; decisions are renewed before they expire
     "include_ipv6": False,
     "vpn_modes": {},                 # provider -> 'exact' | 'net'
     "sanity_percent": 30,
     "notify_url": "",
     "notify_format": "ntfy",         # 'ntfy' | 'gotify' | 'webhook'
-    "spamhaus_asndrop": None,        # None = aus, sonst 'ban' | 'captcha'
+    "spamhaus_asndrop": None,        # None = off, otherwise 'ban' | 'captcha'
     "config_rev": 0,
     "applied_rev": 0,
 }
@@ -125,7 +125,7 @@ def put(key, value, c=None):
 
 
 def bump_rev(c):
-    """Regeln geaendert -> UI zeigt 'nicht angewendet'."""
+    """Rules changed -> UI shows 'not applied'."""
     put("config_rev", (get("config_rev") or 0) + 1, c)
 
 
@@ -149,7 +149,7 @@ def cache_put(key, value):
         c.execute("INSERT OR REPLACE INTO cache(key,value,fetched_at) VALUES(?,?,?)", (key, json.dumps(value), time.time()))
 
 
-# --- Uebernahme aus dem Prototyp (config.json) ------------------------------------------------
+# --- Migration from the prototype (config.json) ------------------------------------------------
 
 def _migrate_prototype():
     old = DATA_DIR / "config.json"

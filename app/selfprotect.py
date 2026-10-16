@@ -1,9 +1,9 @@
-"""Selbstschutz: verhindert, dass man sich per SSH (oder Web) selbst aussperrt.
+"""Self-protection: prevents you from locking yourself out via SSH (or web).
 
-- Geschuetzte IPs und ASNs (Tabelle `protected`) werden bei jedem Lauf aus allen Sperren herausgeschnitten,
-  fuer geschuetzte ASNs werden ausserdem keine Regeln angenommen.
-- Ist /var/run/utmp des Hosts eingebunden (HOST_UTMP), werden die IPs aller aktuell eingeloggten
-  SSH-Sitzungen automatisch mitgeschuetzt.
+- Protected IPs and ASNs (table `protected`) are cut out of all blocks on every run,
+  and no rules are accepted for protected ASNs.
+- If the host's /var/run/utmp is mounted (HOST_UTMP), the IPs of all currently logged-in
+  SSH sessions are protected automatically as well.
 """
 import ipaddress
 import os
@@ -15,7 +15,7 @@ from . import db
 
 HOST_UTMP = Path(os.environ.get("HOST_UTMP", "/host/utmp"))
 
-# struct utmp (glibc, Linux x86_64 und aarch64): 384 Bytes
+# struct utmp (glibc, Linux x86_64 and aarch64): 384 bytes
 _UTMP = struct.Struct("<hxxi32s4s32s256shhiii4i20x")
 USER_PROCESS = 7
 
@@ -38,14 +38,14 @@ def _addr(host: str, addr_v6) -> str | None:
 
 
 def ssh_sessions(path: Path | None = None):
-    """Liest utmp und liefert ([{ip,user,line,since}], status). status: 'ok' | 'nicht eingebunden' | Fehler."""
+    """Reads utmp and returns ([{ip,user,line,since}], status). status: 'ok' | 'not mounted' | error."""
     path = path or HOST_UTMP
     if not path.exists():
-        return [], "nicht eingebunden"
+        return [], "not mounted"
     try:
         data = path.read_bytes()
     except OSError as e:
-        return [], f"nicht lesbar: {e}"
+        return [], f"not readable: {e}"
     out, seen = [], set()
     for off in range(0, len(data) - _UTMP.size + 1, _UTMP.size):
         typ, _pid, line, _id, user, host, _e1, _e2, _sess, sec, _usec, *addr = _UTMP.unpack_from(data, off)
@@ -53,7 +53,7 @@ def ssh_sessions(path: Path | None = None):
             continue
         ip = _addr(_cstr(host), addr)
         if not ip or not ipaddress.ip_address(ip).is_global:
-            continue  # lokale Logins / Konsole
+            continue  # local logins / console
         key = (ip, _cstr(line))
         if key in seen:
             continue
@@ -77,7 +77,7 @@ def add(kind: str, value: str, note: str = ""):
 
 
 def protect_ip(ip: str, note: str, with_asn: bool = True):
-    """Schuetzt eine IP und (optional) ihren ASN. Gibt die geschuetzten ASNs zurueck."""
+    """Protects an IP and (optionally) its ASN. Returns the protected ASNs."""
     from . import sources
 
     ip = str(ipaddress.ip_address(ip))

@@ -52,7 +52,7 @@ def test_login_logout_and_throttle(client):
 def test_proxy_mode_rejects_lockout_and_untrusted(client):
     body = {"token": auth.SETUP_TOKEN, "mode": "proxy", "trusted_proxies": ["10.9.9.9"], "user_header": "Remote-User"}
     r = client.post("/api/setup/auth", headers={**H, "Remote-User": "alice"}, json=body)
-    assert r.status_code == 422 and "aussperren" in r.json()["detail"]   # TestClient-Peer ist 'testclient'
+    assert r.status_code == 422 and "lock you out" in r.json()["detail"]   # the TestClient peer is 'testclient'
     db.put("auth_mode", "proxy")
     db.put("trusted_proxies", ["10.9.9.9/32"])
     assert client.get("/api/overview", headers={"Remote-User": "mallory"}).status_code == 401
@@ -100,7 +100,7 @@ def test_parse_bash_list(client):
 def test_crowdsec_unreachable_is_422_not_500(client):
     setup_local(client)
     r = client.put("/api/crowdsec", headers=H, json={"mode": "lapi", "lapi_url": "http://127.0.0.1:1", "machine_id": "m", "password": "p"})
-    assert r.status_code == 422 and "nicht erreichbar" in r.json()["detail"]
+    assert r.status_code == 422 and "127.0.0.1:1" in r.json()["detail"]
 
 
 def test_bulk_delete(client):
@@ -110,6 +110,6 @@ def test_bulk_delete(client):
     assert [r["asn"] for r in client.get("/api/asns").json()] == [2]
 
 
-def test_static_i18n_served_with_csp(client):
-    r = client.get("/static/i18n.js")
+def test_static_js_served_with_csp(client):
+    r = client.get("/static/text.js")
     assert r.status_code == 200 and "export function t" in r.text

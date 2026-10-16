@@ -1,4 +1,4 @@
-"""Anbindung an CrowdSec. Standard: Local API (LAPI) als Machine. Legacy: cscli per Docker-Socket."""
+"""CrowdSec integration. Default: Local API (LAPI) as a machine. Legacy: cscli via the Docker socket."""
 import io
 import json
 import re
@@ -20,7 +20,7 @@ class CrowdSecError(RuntimeError):
 
 
 def go_duration(s: str) -> float:
-    """'167h59m58.5s' -> Sekunden (negativ = abgelaufen)."""
+    """'167h59m58.5s' -> seconds (negative = expired)."""
     return sum(float(n) * _UNIT[u] for n, u in _DUR.findall(s or ""))
 
 
@@ -66,9 +66,9 @@ class Lapi:
             r = self.http.post(f"{self.base}/watchers/login",
                                json={"machine_id": self.machine_id, "password": self.password, "scenarios": []})
         except httpx.HTTPError as e:
-            raise CrowdSecError(f"LAPI nicht erreichbar ({self.base}): {e}") from e
+            raise CrowdSecError(f"LAPI not reachable ({self.base}): {e}") from e
         if r.status_code != 200:
-            raise CrowdSecError(f"LAPI-Login fehlgeschlagen ({r.status_code}): {r.text[:200]}")
+            raise CrowdSecError(f"LAPI login failed ({r.status_code}): {r.text[:200]}")
         self._token, self._exp = r.json()["token"], time.time() + 3000
 
     def _req(self, method, path, **kw):
@@ -76,7 +76,7 @@ class Lapi:
         try:
             r = self.http.request(method, self.base + path, headers={"Authorization": f"Bearer {self._token}"}, **kw)
         except httpx.HTTPError as e:
-            raise CrowdSecError(f"LAPI nicht erreichbar: {e}") from e
+            raise CrowdSecError(f"LAPI not reachable: {e}") from e
         if r.status_code >= 300:
             raise CrowdSecError(f"LAPI {method} {path} -> {r.status_code}: {r.text[:300]}")
         return r.json() if r.content else None
@@ -85,7 +85,7 @@ class Lapi:
         self._token = None
         self._auth()
         self._req("GET", "/alerts", params={"limit": 1})
-        return "Verbunden"
+        return "Connected"
 
     def list(self, reason):
         alerts = self._req("GET", "/alerts", params={"scenario": reason, "has_active_decision": "true", "limit": 0})
@@ -104,7 +104,7 @@ class Lapi:
 
 
 class DockerCli:
-    """Legacy-Modus: braucht /var/run/docker.sock (entspricht Root-Rechten auf dem Host)."""
+    """Legacy mode: needs /var/run/docker.sock (equivalent to root on the host)."""
 
     def __init__(self, container):
         import docker
@@ -118,7 +118,7 @@ class DockerCli:
         try:
             res = self.c.exec_run(list(cmd))
         except docker.errors.DockerException as e:
-            raise CrowdSecError(f"docker exec fehlgeschlagen: {e}") from e
+            raise CrowdSecError(f"docker exec failed: {e}") from e
         out = res.output.decode(errors="replace")
         if res.exit_code != 0:
             raise CrowdSecError(f"{' '.join(cmd[:4])} -> exit {res.exit_code}: {out[-300:]}")
@@ -139,7 +139,7 @@ class DockerCli:
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         if not self.c.put_archive("/tmp", buf.getvalue()):
-            raise CrowdSecError("Kopieren in den CrowdSec-Container fehlgeschlagen")
+            raise CrowdSecError("Copying into the CrowdSec container failed")
         self._exec("cscli", "decisions", "import", "-i", "/tmp/asn-blocker-import.txt", "--format", "values",
                    "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
                    "--batch", str(BATCH))
@@ -161,4 +161,4 @@ def backend():
         return Lapi(db.get("lapi_url"), db.get("lapi_machine_id"), db.get("lapi_password"))
     if mode == "docker":
         return DockerCli(db.get("docker_container"))
-    raise CrowdSecError("CrowdSec-Verbindung ist noch nicht eingerichtet")
+    raise CrowdSecError("CrowdSec connection is not set up yet")

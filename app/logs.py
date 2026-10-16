@@ -1,4 +1,4 @@
-"""Logging nach stdout: lesbarer Text (Standard) oder JSON (LOG_FORMAT=json)."""
+"""Logging to stdout: readable text (default) or JSON (LOG_FORMAT=json)."""
 import json
 import logging
 import os
@@ -27,7 +27,7 @@ def setup():
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
-    # uvicorn-Logger ueber denselben Handler ausgeben
+    # route uvicorn loggers through the same handler
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         lg = logging.getLogger(name)
         lg.handlers = []
