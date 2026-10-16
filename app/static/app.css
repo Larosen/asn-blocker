@@ -84,6 +84,7 @@ h1 { font-size: 16px; } h2 { font-size: 14px; } h3 { font-size: 13px; }
 input, select, textarea, button { font: inherit; color: inherit; }
 input[type=text], input[type=password], input[type=search], input[type=number], input[type=url], select, textarea {
   background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 5px 8px; min-height: 30px; }
+select { max-width: 100%; text-overflow: ellipsis; }
 textarea { width: 100%; min-height: 140px; font-family: var(--mono); font-size: 12px; }
 input.mono { font-family: var(--mono); }
 label.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
@@ -116,7 +117,7 @@ td.actions { text-align: right; white-space: nowrap; width: 1%; }
 td input.inline { border-color: transparent; background: transparent; width: 100%; min-width: 120px; }
 td input.inline:hover, td input.inline:focus { border-color: var(--line-strong); background: var(--panel); }
 .empty { padding: 28px 16px; text-align: center; color: var(--fg-3); }
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; position: relative; }
 
 /* Status */
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); margin-right: 6px; vertical-align: 1px; }

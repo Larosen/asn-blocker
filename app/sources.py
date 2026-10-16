@@ -1,4 +1,4 @@
-"""Externe Datenquellen: RIPEstat, bgp.tools (ASN-Namen), Spamhaus ASN-DROP, VPN-Serverlisten."""
+"""External data sources: RIPEstat, bgp.tools (ASN names), Spamhaus ASN-DROP, VPN server lists."""
 import csv
 import io
 import ipaddress
@@ -41,10 +41,10 @@ def _ripe(endpoint, resource, timeout=60):
     return http_get(f"{RIPE}/{endpoint}/data.json", {"resource": resource, "sourceapp": RIPE_APP}, timeout).get("data", {})
 
 
-# --- ASN-Namen (lokal, fuer Suche) ---------------------------------------------------------
+# --- ASN names (local, for search) -------------------------------------------------------
 
 def refresh_asn_names():
-    """bgp.tools/asns.csv (~5 MB) in SQLite laden. Spalten: asn,name,class,cc"""
+    """Load bgp.tools/asns.csv (~5 MB) into SQLite. Columns: asn,name,class,cc"""
     text = http_get("https://bgp.tools/asns.csv", timeout=120, as_text=True)
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
@@ -52,7 +52,7 @@ def refresh_asn_names():
         if n.isdigit():
             rows.append((int(n), r.get("name") or "", r.get("class") or "", r.get("cc") or ""))
     if len(rows) < 10000:
-        raise SourceError(f"bgp.tools asns.csv unplausibel ({len(rows)} Zeilen)")
+        raise SourceError(f"bgp.tools asns.csv implausible ({len(rows)} rows)")
     with db.tx() as c:
         c.execute("DELETE FROM asn_names")
         c.executemany("INSERT INTO asn_names VALUES(?,?,?,?)", rows)
@@ -93,10 +93,10 @@ def asn_name(asn):
     return r["name"] if r else ""
 
 
-# --- Prefixe ------------------------------------------------------------------------------------
+# --- Prefixes ----------------------------------------------------------------------------------
 
 def asn_prefixes(asn, use_cache=True):
-    """Alle announced Prefixe (v4+v6) eines ASN, gecacht. Wirft SourceError bei ungueltiger Antwort."""
+    """All announced prefixes (v4+v6) of an ASN, cached. Raises SourceError on an invalid response."""
     key = f"prefixes:{asn}"
     if use_cache:
         hit = db.cache_get(key, PREFIX_TTL)
@@ -104,14 +104,14 @@ def asn_prefixes(asn, use_cache=True):
             return hit
     prefixes = _ripe("announced-prefixes", f"AS{asn}").get("prefixes")
     if prefixes is None:
-        raise SourceError(f"AS{asn}: ungueltige Antwort von RIPEstat")
+        raise SourceError(f"AS{asn}: invalid response from RIPEstat")
     out = sorted({p["prefix"] for p in prefixes})
     db.cache_put(key, out)
     return out
 
 
 def prefixes_many(asns, use_cache=True):
-    """Parallel, max. 4 gleichzeitige Anfragen an RIPEstat."""
+    """Parallel, at most 4 concurrent requests to RIPEstat."""
     asns = list(asns)
     with ThreadPoolExecutor(4) as ex:
         return dict(zip(asns, ex.map(lambda a: asn_prefixes(a, use_cache), asns), strict=True))
@@ -129,7 +129,7 @@ def ip_info(ip):
 
 
 def spamhaus_asndrop(use_cache=True):
-    """NDJSON: {"asn":..., "asname":..., "cc":...} je Zeile, letzte Zeile Metadaten."""
+    """NDJSON: {"asn":..., "asname":..., "cc":...} per line, last line is metadata."""
     if use_cache:
         hit = db.cache_get("spamhaus_asndrop", PREFIX_TTL)
         if hit is not None:
@@ -144,14 +144,14 @@ def spamhaus_asndrop(use_cache=True):
         if isinstance(o.get("asn"), int):
             out.append({"asn": o["asn"], "name": o.get("asname", ""), "cc": o.get("cc", "")})
     if not out:
-        raise SourceError("Spamhaus ASN-DROP: leere Liste")
+        raise SourceError("Spamhaus ASN-DROP: empty list")
     db.cache_put("spamhaus_asndrop", out)
     return out
 
 
-# --- VPN-Anbieter ---------------------------------------------------------------------------------
-# fetch() liefert [(country_code, country_name, ip_oder_hostname)]. IPs werden erst fuer die
-# ausgewaehlten Laender aufgeloest und auf oeffentliche Adressen gefiltert.
+# --- VPN providers -------------------------------------------------------------------------------
+# fetch() returns [(country_code, country_name, ip_or_hostname)]. IPs are resolved only for the
+# selected countries and filtered to public addresses.
 
 def _public_ip(v):
     try:
@@ -163,7 +163,7 @@ def _public_ip(v):
 
 class Provider:
     id = name = note = ""
-    exit_asn = None  # bekannter ASN der Exit-IPs, als Hinweis in der UI
+    exit_asn = None  # known ASN of the exit IPs, shown as a hint in the UI
 
     def fetch(self):
         raise NotImplementedError
@@ -174,7 +174,7 @@ class Provider:
         if hit is None:
             hit = [list(e) for e in self.fetch() if e[0] and e[2]]
             if not hit:
-                raise SourceError(f"{self.name}: leere Serverliste")
+                raise SourceError(f"{self.name}: empty server list")
             db.cache_put(key, hit)
         return hit
 
@@ -195,8 +195,8 @@ class Provider:
                 for res in ex.map(_resolve, hosts):
                     ips.update(filter(None, map(_public_ip, res)))
             if not ips:
-                raise SourceError(f"{self.name} {code}: DNS-Auflösung für {len(hosts)} Hostnamen fehlgeschlagen "
-                                  f"(z. B. {hosts[0]}) – hat der Container DNS?")
+                raise SourceError(f"{self.name} {code}: DNS resolution failed for {len(hosts)} hostnames "
+                                  f"(e.g. {hosts[0]}) – does the container have DNS?")
         return sorted(ips)
 
 
@@ -209,7 +209,7 @@ def _resolve(host):
 
 class NordVPN(Provider):
     id, name, exit_asn = "nordvpn", "NordVPN", 207137
-    note = "api.nordvpn.com – Einwahl-IPs; Exit-IPs liegen meist in AS207137 (PacketHub)."
+    note = "api.nordvpn.com – entry IPs; exit IPs are usually in AS207137 (PacketHub)."
 
     def fetch(self):
         servers = http_get("https://api.nordvpn.com/v1/servers", {"limit": 20000}, timeout=180)
@@ -235,7 +235,7 @@ class Mullvad(Provider):
 
 class Surfshark(Provider):
     id, name = "surfshark", "Surfshark"
-    note = "api.surfshark.com – nur Hostnamen, IPs per DNS aufgelöst."
+    note = "api.surfshark.com – hostnames only, IPs resolved via DNS."
 
     def fetch(self):
         return [(c.get("countryCode", ""), c.get("country", ""), c.get("connectionName"))
@@ -258,7 +258,7 @@ class IVPN(Provider):
 
 class PIA(Provider):
     id, name = "pia", "Private Internet Access"
-    note = "serverlist.piaservers.net (JSON + Signatur)"
+    note = "serverlist.piaservers.net (JSON + signature)"
 
     def fetch(self):
         text = http_get("https://serverlist.piaservers.net/vpninfo/servers/v6", as_text=True)

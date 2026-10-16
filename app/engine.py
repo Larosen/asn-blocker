@@ -1,8 +1,8 @@
-"""Soll-Zustand berechnen und mit CrowdSec abgleichen (Diff-Sync).
+"""Compute the desired state and reconcile it with CrowdSec (diff sync).
 
-Ablauf: alle Quellen laden -> Soll-Ranges berechnen -> Plausibilitaet pruefen ->
-neue/zu erneuernde Decisions anlegen -> erst danach entfallene loeschen.
-Es gibt also keine Luecke ohne Schutz; jeder Fehler vor dem Schreiben laesst CrowdSec unveraendert.
+Flow: load all sources -> compute desired ranges -> sanity check ->
+create new/refreshed decisions -> only then delete obsolete ones.
+So there is never a gap without protection; any error before writing leaves CrowdSec unchanged.
 """
 import ipaddress
 import json
@@ -23,10 +23,10 @@ class Busy(RuntimeError):
 
 
 class Blocked(RuntimeError):
-    """Plausibilitaetspruefung schlaegt an - braucht Bestaetigung."""
+    """Sanity check tripped - needs confirmation."""
 
 
-# --- Soll-Zustand ---------------------------------------------------------------------------
+# --- Desired state -------------------------------------------------------------------------
 
 def rules():
     asn_rules = {r["asn"]: r for r in db.q("SELECT * FROM asn_rules")}
@@ -37,7 +37,7 @@ def build(log, fresh=True):
     ipv6 = db.get("include_ipv6")
     modes = db.get("vpn_modes") or {}
 
-    log("Ausnahmen sammeln")
+    log("Collecting exemptions")
     exempt = []  # (network, label)
     by_provider = defaultdict(list)
     for r in db.q("SELECT provider, country FROM vpn_rules ORDER BY provider, country"):
@@ -45,37 +45,37 @@ def build(log, fresh=True):
     for pid, countries in by_provider.items():
         prov = sources.PROVIDERS.get(pid)
         if not prov:
-            raise sources.SourceError(f"Unbekannter VPN-Anbieter {pid}")
+            raise sources.SourceError(f"Unknown VPN provider {pid}")
         if fresh:
             db.cache_put(f"vpn:{pid}", [list(e) for e in prov.fetch() if e[0] and e[2]])
         widen = modes.get(pid) == "net"
         for cc in countries:
             ips = prov.ips(cc)
             if not ips:
-                raise sources.SourceError(f"{prov.name} {cc}: keine Server-IPs ermittelt")
+                raise sources.SourceError(f"{prov.name} {cc}: no server IPs found")
             for ip in ips:
                 a = ipaddress.ip_address(ip)
                 plen = (24 if a.version == 4 else 64) if widen else a.max_prefixlen
                 exempt.append((ipaddress.ip_network(f"{ip}/{plen}", strict=False), f"VPN {prov.name} {cc}"))
-            log(f"  {prov.name} {cc}: {len(ips)} Server-IPs" + (" (als Netz)" if widen else ""))
+            log(f"  {prov.name} {cc}: {len(ips)} server IPs" + (" (as network)" if widen else ""))
 
     ex_asns = [int(r["value"]) for r in db.q("SELECT value FROM exemptions WHERE kind='asn'")]
     for asn, p in sources.prefixes_many(ex_asns, use_cache=not fresh).items():
         if not p:
-            raise sources.SourceError(f"Ausnahme-AS{asn}: keine Prefixe")
-        exempt += [(n, f"Ausnahme-AS{asn}") for n in netset.parse(p)]
-        log(f"  Ausnahme-AS{asn}: {len(p)} Prefixe")
+            raise sources.SourceError(f"Exempt AS{asn}: no prefixes")
+        exempt += [(n, f"Exempt AS{asn}") for n in netset.parse(p)]
+        log(f"  Exempt AS{asn}: {len(p)} prefixes")
     for r in db.q("SELECT value, note FROM exemptions WHERE kind='cidr'"):
-        exempt += [(n, "Manuell" + (f": {r['note']}" if r["note"] else "")) for n in netset.parse([r["value"]])]
+        exempt += [(n, "Manual" + (f": {r['note']}" if r["note"] else "")) for n in netset.parse([r["value"]])]
 
     guard = guard_ips()
     exempt += [(ipaddress.ip_network(ip), label) for ip, label in guard.items()]
     prot_asns = sorted(selfprotect.protected_asns())
     for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
-        exempt += [(n, f"Selbstschutz AS{asn}") for n in netset.parse(p)]
-    log(f"  Selbstschutz: {len(guard)} IPs, {len(prot_asns)} ASNs")
+        exempt += [(n, f"Self-protection AS{asn}") for n in netset.parse(p)]
+    log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs")
 
-    log("ASN-Ranges sammeln")
+    log("Collecting ASN ranges")
     asn_rules = rules()
     if db.get("spamhaus_asndrop"):
         drop = sources.spamhaus_asndrop(use_cache=not fresh)
@@ -84,13 +84,13 @@ def build(log, fresh=True):
             if d["asn"] not in asn_rules:
                 asn_rules[d["asn"]] = {"asn": d["asn"], "name": d["name"], "action": db.get("spamhaus_asndrop"), "spamhaus": True}
                 added += 1
-        log(f"  Spamhaus ASN-DROP: {len(drop)} ASNs, davon {added} zusätzlich")
+        log(f"  Spamhaus ASN-DROP: {len(drop)} ASNs, {added} of them additional")
     for asn in set(asn_rules) & set(prot_asns):
-        log(f"  AS{asn} ist geschützt (Selbstschutz) – Regel wird ignoriert")
+        log(f"  AS{asn} is protected (self-protection) – rule ignored")
         del asn_rules[asn]
     raw = {"ban": [], "captcha": []}
     prefixes = sources.prefixes_many(asn_rules, use_cache=not fresh)
-    spamhaus = [0, 0]  # ASNs, Prefixe – zusammengefasst statt hunderter Einzelzeilen
+    spamhaus = [0, 0]  # ASNs, prefixes – summarized instead of hundreds of individual lines
     for asn, r in sorted(asn_rules.items()):
         nets = [n for n in netset.parse(prefixes[asn]) if ipv6 or n.version == 4]
         raw[r["action"]] += nets
@@ -98,39 +98,39 @@ def build(log, fresh=True):
             spamhaus[0] += 1
             spamhaus[1] += len(nets)
         else:
-            log(f"  AS{asn} {r.get('name') or sources.asn_name(asn)} -> {r['action']}: {len(nets)} Prefixe")
+            log(f"  AS{asn} {r.get('name') or sources.asn_name(asn)} -> {r['action']}: {len(nets)} prefixes")
     if spamhaus[0]:
-        log(f"  Spamhaus ASN-DROP -> {db.get('spamhaus_asndrop')}: {spamhaus[0]} ASNs, {spamhaus[1]} Prefixe")
+        log(f"  Spamhaus ASN-DROP -> {db.get('spamhaus_asndrop')}: {spamhaus[0]} ASNs, {spamhaus[1]} prefixes")
 
-    log("Ausnahmen heraustrennen")
+    log("Carving out exemptions")
     ex_nets = [n for n, _ in exempt]
     ban = netset.subtract(raw["ban"], ex_nets)
-    captcha = netset.subtract(raw["captcha"], ex_nets + ban)  # Captcha nur, wo nicht ohnehin gebannt
-    log(f"  ban: {len(ban)} Ranges, captcha: {len(captcha)} Ranges, {len(netset.collapse(ex_nets))} Ausnahme-Netze")
-    # harte Endkontrolle: keine geschuetzte IP darf in einer Sperre landen
+    captcha = netset.subtract(raw["captcha"], ex_nets + ban)  # captcha only where not already banned
+    log(f"  ban: {len(ban)} ranges, captcha: {len(captcha)} ranges, {len(netset.collapse(ex_nets))} exempt networks")
+    # hard final check: no protected IP may end up in a block
     for ip, label in guard.items():
         hit = status_of(str(ipaddress.ip_network(ip).network_address), {"ban": [str(n) for n in ban], "captcha": [str(n) for n in captcha]})
         if hit:
-            raise sources.SourceError(f"Selbstschutz verletzt: {ip} ({label}) wäre von {hit} betroffen – Lauf abgebrochen")
+            raise sources.SourceError(f"Self-protection violated: {ip} ({label}) would be hit by {hit} – run aborted")
     return {"ban": [str(n) for n in ban], "captcha": [str(n) for n in captcha]}, \
         [(str(n), label) for n, label in exempt]
 
 
 def guard_ips():
-    """Alle IPs, die nie gesperrt werden duerfen: geschuetzte IPs + aktive SSH-Sitzungen. {ip_cidr: label}"""
+    """All IPs that must never be blocked: protected IPs + active SSH sessions. {ip_cidr: label}"""
     out = {}
     for r in db.q("SELECT value, note FROM protected WHERE kind='ip'"):
-        out[str(ipaddress.ip_network(r["value"]))] = "Selbstschutz" + (f": {r['note']}" if r["note"] else "")
+        out[str(ipaddress.ip_network(r["value"]))] = "Self-protection" + (f": {r['note']}" if r["note"] else "")
     sessions, _ = selfprotect.ssh_sessions()
     for s in sessions:
-        out.setdefault(str(ipaddress.ip_network(s["ip"])), f"SSH-Sitzung {s['user']}@{s['line']}")
+        out.setdefault(str(ipaddress.ip_network(s["ip"])), f"SSH session {s['user']}@{s['line']}")
     return out
 
 
-# --- Abgleich ------------------------------------------------------------------------------------
+# --- Reconcile ----------------------------------------------------------------------------------
 
 def diff(desired, current, refresh_before):
-    """current: Liste {id,value,until}. Gibt (add, delete_ids, refresh_count) zurueck."""
+    """current: list of {id,value,until}. Returns (add, delete_ids, refresh_count)."""
     by_value = defaultdict(list)
     for d in current:
         by_value[d["value"]].append(d)
@@ -145,7 +145,7 @@ def diff(desired, current, refresh_before):
             delete += [d["id"] for d in ds]
             refresh += 1
         else:
-            delete += [d["id"] for d in ds[1:]]  # Duplikate
+            delete += [d["id"] for d in ds[1:]]  # duplicates
     for v, ds in by_value.items():
         if v not in want:
             delete += [d["id"] for d in ds]
@@ -162,14 +162,14 @@ def _sanity(desired, force):
     if force or prev == 0:
         return
     if new == 0 and (db.q1("SELECT 1 x FROM asn_rules") or db.get("spamhaus_asndrop")):
-        raise Blocked("Regeln vorhanden, aber 0 Ranges berechnet")
+        raise Blocked("Rules exist, but 0 ranges computed")
     pct = abs(new - prev) / prev * 100
     if pct > db.get("sanity_percent"):
-        raise Blocked(f"Range-Anzahl ändert sich um {pct:.0f} % ({prev} -> {new}), Grenze {db.get('sanity_percent')} %")
+        raise Blocked(f"Range count changes by {pct:.0f} % ({prev} -> {new}), limit {db.get('sanity_percent')} %")
 
 
 def status_of(ip, ranges):
-    """'ban' | 'captcha' | None fuer eine IP gegen {type: [cidr]}"""
+    """'ban' | 'captcha' | None for an IP against {type: [cidr]}"""
     for t in ("ban", "captcha"):
         if netset.contains(ranges.get(t, []), ip):
             return t
@@ -177,9 +177,9 @@ def status_of(ip, ranges):
 
 
 def run(kind, user, force=False):
-    """kind: 'plan' (nur berechnen) oder 'apply'. Gibt die Run-ID zurueck."""
+    """kind: 'plan' (compute only) or 'apply'. Returns the run ID."""
     if not _lock.acquire(blocking=False):
-        raise Busy("Es läuft bereits ein Lauf")
+        raise Busy("A run is already in progress")
     try:
         with db.tx() as c:
             run_id = c.execute("INSERT INTO runs(kind,status,triggered_by,started_at) VALUES(?,?,?,?)",
@@ -218,7 +218,7 @@ def run(kind, user, force=False):
                 plan[t] = (add, delete)
                 summary[f"{t}_added"], summary[f"{t}_removed"], summary[f"{t}_refreshed"] = len(new), len(removed), refresh
                 changes += [(run_id, "+", t, v) for v in sorted(new)] + [(run_id, "-", t, v) for v in sorted(removed)]
-                log(f"Plan {t}: +{len(new)} neu, -{len(removed)} entfallen, {refresh} erneuert")
+                log(f"Plan {t}: +{len(new)} new, -{len(removed)} removed, {refresh} refreshed")
             with db.tx() as c:
                 c.executemany("INSERT INTO run_changes VALUES(?,?,?,?)", changes)
 
@@ -226,12 +226,12 @@ def run(kind, user, force=False):
             for w in db.q("SELECT ip FROM watch_ips"):
                 watch[w["ip"]] = status_of(w["ip"], desired)
                 if watch[w["ip"]]:
-                    log(f"WARNUNG Wächter-IP {w['ip']} wäre betroffen: {watch[w['ip']]}")
+                    log(f"WARNING watch IP {w['ip']} would be affected: {watch[w['ip']]}")
             summary["watch_hits"] = [ip for ip, s in watch.items() if s]
 
             if kind == "apply":
                 _sanity(desired, force)
-                log("Änderungen an CrowdSec übertragen")
+                log("Pushing changes to CrowdSec")
                 for t, reason in REASONS.items():
                     add, delete = plan[t]
                     if add:
@@ -242,39 +242,39 @@ def run(kind, user, force=False):
                     missing = set(desired[t]) - active
                     extra = active - set(desired[t])
                     summary[f"{t}_active"] = len(active)
-                    log(f"  {t}: {len(active)} aktiv" + (f", FEHLEN {len(missing)}" if missing else "")
-                        + (f", ÜBERZÄHLIG {len(extra)}" if extra else ""))
+                    log(f"  {t}: {len(active)} active" + (f", MISSING {len(missing)}" if missing else "")
+                        + (f", EXTRA {len(extra)}" if extra else ""))
                     if missing:
-                        raise crowdsec.CrowdSecError(f"{len(missing)} {t}-Ranges fehlen nach dem Import")
+                        raise crowdsec.CrowdSecError(f"{len(missing)} {t} ranges missing after import")
                 with db.tx() as c:
                     c.execute("DELETE FROM applied")
                     c.executemany("INSERT INTO applied VALUES(?,?)", [(t, v) for t, vs in desired.items() for v in vs])
                     c.execute("DELETE FROM exempt_index")
                     c.executemany("INSERT INTO exempt_index VALUES(?,?)", exempt)
                     for ip, s in watch.items():
-                        c.execute("UPDATE watch_ips SET last_status=? WHERE ip=?", (s or "frei", ip))
+                        c.execute("UPDATE watch_ips SET last_status=? WHERE ip=?", (s or "clear", ip))
                     db.put("applied_rev", rev, c)
                 if summary["watch_hits"]:
-                    notify.send("asn-blocker: Wächter-IP betroffen", ", ".join(summary["watch_hits"]), "warning")
+                    notify.send("asn-blocker: watch IP affected", ", ".join(summary["watch_hits"]), "warning")
             status = "ok"
-            log("Fertig")
+            log("Done")
         except Blocked as e:
             status = "blocked"
-            log(f"ANGEHALTEN: {e}. CrowdSec unverändert – im UI bestätigen, um trotzdem anzuwenden.")
-            notify.send("asn-blocker: Lauf angehalten", str(e), "warning")
+            log(f"STOPPED: {e}. CrowdSec unchanged – confirm in the UI to apply anyway.")
+            notify.send("asn-blocker: run stopped", str(e), "warning")
         except (sources.SourceError, crowdsec.CrowdSecError) as e:
-            log(f"FEHLER: {e}")
+            log(f"ERROR: {e}")
             if kind == "apply":
-                notify.send("asn-blocker: Lauf fehlgeschlagen", str(e))
+                notify.send("asn-blocker: run failed", str(e))
         except Exception as e:  # noqa: BLE001
-            log(f"FEHLER (unerwartet): {e!r}")
-            log_.exception("Unerwarteter Fehler im Lauf %s", run_id)
+            log(f"ERROR (unexpected): {e!r}")
+            log_.exception("Unexpected error in run %s", run_id)
             if kind == "apply":
-                notify.send("asn-blocker: Lauf fehlgeschlagen", repr(e))
+                notify.send("asn-blocker: run failed", repr(e))
         with db.tx() as c:
             c.execute("UPDATE runs SET status=?, finished_at=?, summary=? WHERE id=?",
                       (status, time.time(), json.dumps(summary), run_id))
-            # Historie begrenzen
+            # limit history
             c.execute("DELETE FROM run_changes WHERE run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT -1 OFFSET 100)")
             c.execute("DELETE FROM runs WHERE id IN (SELECT id FROM runs ORDER BY id DESC LIMIT -1 OFFSET 100)")
         return run_id
@@ -287,7 +287,7 @@ _preview_lock = threading.Lock()
 
 
 def preview():
-    """Schnelle Vorschau fuer die Apply-Leiste: Soll (aus Caches) gegen zuletzt angewendeten Stand."""
+    """Quick preview for the apply bar: desired state (from caches) vs. last applied state."""
     rev = db.get("config_rev")
     if _preview["rev"] == rev:
         return _preview["result"]
@@ -313,7 +313,7 @@ def is_running():
     return _lock.locked()
 
 
-# --- IP-Pruefung ------------------------------------------------------------------------------------
+# --- IP check --------------------------------------------------------------------------------------
 
 def check_ip(ip):
     ip = str(ipaddress.ip_address(ip))
@@ -327,7 +327,7 @@ def check_ip(ip):
     manual = [r["value"] for r in db.q("SELECT value FROM exemptions WHERE kind='cidr'")
               if a in ipaddress.ip_network(r["value"], strict=False)]
     out = {"ip": ip, "status": status_of(ip, applied), "ranges": {t: [str(n) for n in v] for t, v in hits.items() if v},
-           "exempt": exempt or (["Manuell"] if manual else []), "asns": [], "global": a.is_global}
+           "exempt": exempt or (["Manual"] if manual else []), "asns": [], "global": a.is_global}
     if a.is_global:
         try:
             info = sources.ip_info(ip)
@@ -347,7 +347,7 @@ def _last_apply():
 
 
 def next_due():
-    """Zeitpunkt des naechsten automatischen Laufs oder None (noch nie manuell angewendet)."""
+    """Time of the next automatic run, or None (never applied manually yet)."""
     last = _last_apply()
     if not last or not db.get("crowdsec_mode"):
         return None
@@ -365,12 +365,12 @@ def scheduler():
             if time.time() - updated > 7 * 86400:
                 try:
                     n = sources.refresh_asn_names()
-                    log_.info("ASN-Namensliste aktualisiert: %d Einträge", n)
+                    log_.info("ASN name list updated: %d entries", n)
                 except sources.SourceError as e:
-                    log_.warning("ASN-Namensliste: %s", e)
-                    db.put("asn_names_updated", time.time() - 6 * 86400)  # in 1 Tag erneut
+                    log_.warning("ASN name list: %s", e)
+                    db.put("asn_names_updated", time.time() - 6 * 86400)  # retry in 1 day
         except Busy:
             pass
         except Exception:  # noqa: BLE001
-            log_.exception("Scheduler-Fehler")
+            log_.exception("Scheduler error")
         time.sleep(30)
