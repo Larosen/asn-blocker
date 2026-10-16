@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     volumes:
       - asn-blocker-data:/data
+      # Selbstschutz: aktive SSH-Sitzungen des Hosts erkennen (nur lesend)
+      - /var/run/utmp:/host/utmp:ro
     networks:
       - crowdsec      # Netz, in dem der CrowdSec-Container erreichbar ist
       # - pangolin    # bzw. das Netz des Reverse Proxys (Newt/Traefik)

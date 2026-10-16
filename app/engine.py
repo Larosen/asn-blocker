@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict
 
-from . import crowdsec, db, netset, notify, sources
+from . import crowdsec, db, netset, notify, selfprotect, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
 _lock = threading.Lock()
@@ -68,6 +68,13 @@ def build(log, fresh=True):
     for r in db.q("SELECT value, note FROM exemptions WHERE kind='cidr'"):
         exempt += [(n, "Manuell" + (f": {r['note']}" if r["note"] else "")) for n in netset.parse([r["value"]])]
 
+    guard = guard_ips()
+    exempt += [(ipaddress.ip_network(ip), label) for ip, label in guard.items()]
+    prot_asns = sorted(selfprotect.protected_asns())
+    for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
+        exempt += [(n, f"Selbstschutz AS{asn}") for n in netset.parse(p)]
+    log(f"  Selbstschutz: {len(guard)} IPs, {len(prot_asns)} ASNs")
+
     log("ASN-Ranges sammeln")
     asn_rules = rules()
     if db.get("spamhaus_asndrop"):
@@ -75,23 +82,49 @@ def build(log, fresh=True):
         added = 0
         for d in drop:
             if d["asn"] not in asn_rules:
-                asn_rules[d["asn"]] = {"asn": d["asn"], "name": d["name"], "action": db.get("spamhaus_asndrop")}
+                asn_rules[d["asn"]] = {"asn": d["asn"], "name": d["name"], "action": db.get("spamhaus_asndrop"), "spamhaus": True}
                 added += 1
         log(f"  Spamhaus ASN-DROP: {len(drop)} ASNs, davon {added} zusätzlich")
+    for asn in set(asn_rules) & set(prot_asns):
+        log(f"  AS{asn} ist geschützt (Selbstschutz) – Regel wird ignoriert")
+        del asn_rules[asn]
     raw = {"ban": [], "captcha": []}
     prefixes = sources.prefixes_many(asn_rules, use_cache=not fresh)
+    spamhaus = [0, 0]  # ASNs, Prefixe – zusammengefasst statt hunderter Einzelzeilen
     for asn, r in sorted(asn_rules.items()):
         nets = [n for n in netset.parse(prefixes[asn]) if ipv6 or n.version == 4]
         raw[r["action"]] += nets
-        log(f"  AS{asn} {r.get('name', '')} -> {r['action']}: {len(nets)} Prefixe")
+        if r.get("spamhaus"):
+            spamhaus[0] += 1
+            spamhaus[1] += len(nets)
+        else:
+            log(f"  AS{asn} {r.get('name') or sources.asn_name(asn)} -> {r['action']}: {len(nets)} Prefixe")
+    if spamhaus[0]:
+        log(f"  Spamhaus ASN-DROP -> {db.get('spamhaus_asndrop')}: {spamhaus[0]} ASNs, {spamhaus[1]} Prefixe")
 
     log("Ausnahmen heraustrennen")
     ex_nets = [n for n, _ in exempt]
     ban = netset.subtract(raw["ban"], ex_nets)
     captcha = netset.subtract(raw["captcha"], ex_nets + ban)  # Captcha nur, wo nicht ohnehin gebannt
     log(f"  ban: {len(ban)} Ranges, captcha: {len(captcha)} Ranges, {len(netset.collapse(ex_nets))} Ausnahme-Netze")
+    # harte Endkontrolle: keine geschuetzte IP darf in einer Sperre landen
+    for ip, label in guard.items():
+        hit = status_of(str(ipaddress.ip_network(ip).network_address), {"ban": [str(n) for n in ban], "captcha": [str(n) for n in captcha]})
+        if hit:
+            raise sources.SourceError(f"Selbstschutz verletzt: {ip} ({label}) wäre von {hit} betroffen – Lauf abgebrochen")
     return {"ban": [str(n) for n in ban], "captcha": [str(n) for n in captcha]}, \
         [(str(n), label) for n, label in exempt]
+
+
+def guard_ips():
+    """Alle IPs, die nie gesperrt werden duerfen: geschuetzte IPs + aktive SSH-Sitzungen. {ip_cidr: label}"""
+    out = {}
+    for r in db.q("SELECT value, note FROM protected WHERE kind='ip'"):
+        out[str(ipaddress.ip_network(r["value"]))] = "Selbstschutz" + (f": {r['note']}" if r["note"] else "")
+    sessions, _ = selfprotect.ssh_sessions()
+    for s in sessions:
+        out.setdefault(str(ipaddress.ip_network(s["ip"])), f"SSH-Sitzung {s['user']}@{s['line']}")
+    return out
 
 
 # --- Abgleich ------------------------------------------------------------------------------------

@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS vpn_rules (provider TEXT NOT NULL, country TEXT NOT N
 CREATE TABLE IF NOT EXISTS exemptions (
   kind TEXT NOT NULL CHECK (kind IN ('asn','cidr')), value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (kind, value));
+-- Selbstschutz: IPs/ASNs, die nie gesperrt werden duerfen
+CREATE TABLE IF NOT EXISTS protected (kind TEXT NOT NULL CHECK (kind IN ('asn','ip')), value TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, PRIMARY KEY (kind, value));
 CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', last_status TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL, triggered_by TEXT NOT NULL,
