@@ -1,3 +1,4 @@
+import hmac
 import ipaddress
 import logging
 import re
@@ -20,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 
 @asynccontextmanager
@@ -29,7 +30,7 @@ async def lifespan(_app):
     with db.tx() as c:
         c.execute("UPDATE runs SET status='failed', finished_at=? WHERE status='running'", (time.time(),))
     if not db.get("auth_mode"):
-        log.warning("Initial setup: setup token = %s", auth.SETUP_TOKEN)
+        log.warning("Initial setup: setup token = %s", auth.new_setup_token())
     threading.Thread(target=engine.scheduler, daemon=True, name="scheduler").start()
     yield
 
@@ -41,20 +42,42 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' 
        "font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 
+MAX_BODY = 4 * 2**20
+
+
+def _reject(request: Request) -> JSONResponse | None:
+    if request.method in ("GET", "HEAD", "OPTIONS") or not request.url.path.startswith("/api/"):
+        return None
+    # CSRF: state-changing requests require a custom header (forces a CORS preflight) and a matching Origin
+    if request.headers.get("x-requested-with") != "asn-blocker":
+        return JSONResponse({"detail": "Missing CSRF header"}, 403)
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("host", "")
+        if auth._trusted(auth.peer_ip(request)):
+            host = request.headers.get("x-forwarded-host", host)
+        if urlsplit(origin).netloc != host.split(",")[0].strip():
+            return JSONResponse({"detail": "Origin mismatch"}, 403)
+    # Bounded request bodies (browsers always send Content-Length for fetch bodies)
+    if "transfer-encoding" in request.headers:
+        return JSONResponse({"detail": "Content-Length required"}, 411)
+    try:
+        if int(request.headers.get("content-length") or 0) > MAX_BODY:
+            return JSONResponse({"detail": "Request body too large"}, 413)
+    except ValueError:
+        return JSONResponse({"detail": "Invalid Content-Length"}, 400)
+    return None
+
+
 @app.middleware("http")
 async def guard(request: Request, call_next):
-    # CSRF: state-changing requests require a custom header (forces a CORS preflight) and a matching Origin
-    if request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith("/api/"):
-        if request.headers.get("x-requested-with") != "asn-blocker":
-            return JSONResponse({"detail": "Missing CSRF header"}, 403)
-        origin = request.headers.get("origin")
-        if origin:
-            host = request.headers.get("host", "")
-            if auth._trusted(auth.peer_ip(request)):
-                host = request.headers.get("x-forwarded-host", host)
-            if urlsplit(origin).netloc != host.split(",")[0].strip():
-                return JSONResponse({"detail": "Origin mismatch"}, 403)
-    resp = await call_next(request)
+    resp = _reject(request)
+    if resp is None:
+        try:
+            resp = await call_next(request)
+        except Exception:  # noqa: BLE001 - still answer with the security headers below
+            log.exception("Unhandled error on %s %s", request.method, request.url.path)
+            resp = JSONResponse({"detail": "Internal error"}, 500)
     h = resp.headers
     h["Content-Security-Policy"] = CSP
     h["X-Content-Type-Options"] = "nosniff"
@@ -107,7 +130,12 @@ class SetupAuth(BaseModel):
     user_header: str = Field("Remote-User", pattern=r"^[A-Za-z0-9-]{1,64}$")
     trusted_proxies: list[str] = []
     username: str = Field("admin", pattern=r"^[\w.@-]{1,64}$")
-    password: str = ""
+    password: str = Field("", max_length=auth.MAX_PASSWORD)
+
+    @field_validator("user_header")
+    @classmethod
+    def _header(cls, v):
+        return auth.check_user_header(v)
 
     @field_validator("trusted_proxies")
     @classmethod
@@ -119,7 +147,7 @@ class SetupAuth(BaseModel):
 def setup_auth(s: SetupAuth, request: Request, response: Response):
     if db.get("auth_mode"):
         raise HTTPException(409, "Already set up")
-    auth.check_setup_token(s.token, auth.peer_ip(request))
+    auth.check_setup_token(s.token)
     if s.mode == "proxy":
         if not s.trusted_proxies:
             raise HTTPException(422, "At least one trusted proxy (IP/CIDR) is required")
@@ -131,13 +159,17 @@ def setup_auth(s: SetupAuth, request: Request, response: Response):
                                      "Open the setup through the reverse proxy with SSO.")
     elif len(s.password) < 12:
         raise HTTPException(422, "Password: at least 12 characters")
+    password_hash = auth.hash_password(s.password) if s.mode == "local" else None
     with db.tx() as c:
+        if db.get("auth_mode"):  # concurrent setup request won the race
+            raise HTTPException(409, "Already set up")
+        db.put("setup_token_hash", None, c)
         db.put("auth_mode", s.mode, c)
         db.put("auth_user_header", s.user_header, c)
         db.put("trusted_proxies", s.trusted_proxies, c)
         if s.mode == "local":
             db.put("local_user", s.username, c)
-            db.put("local_password_hash", auth.hash_password(s.password), c)
+            db.put("local_password_hash", password_hash, c)
     user = s.username if s.mode == "local" else request.headers.get(s.user_header)
     if s.mode == "local":
         _set_cookie(response, request, auth.create_session(s.username))
@@ -151,8 +183,8 @@ def _set_cookie(response, request, token):
 
 
 class Login(BaseModel):
-    username: str
-    password: str
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=auth.MAX_PASSWORD)
 
 
 @pub.post("/login")
@@ -160,10 +192,11 @@ def login(body: Login, request: Request, response: Response):
     if db.get("auth_mode") != "local":
         raise HTTPException(400, "Local login is not enabled")
     ip = auth.client_ip(request)
-    auth.throttle(ip)
-    if body.username != db.get("local_user") or not auth.verify_password(body.password, db.get("local_password_hash")):
-        auth.record_failure(ip)
+    key = auth.attempt(ip)
+    pw_ok = auth.verify_password(body.password, db.get("local_password_hash"))  # always hashes: no user enumeration
+    if not (hmac.compare_digest(body.username.encode(), (db.get("local_user") or "").encode()) and pw_ok):
         raise HTTPException(401, "Wrong username or password")
+    auth.forgive(key)
     _set_cookie(response, request, auth.create_session(body.username))
     db.audit(body.username, "login", {"ip": ip})
     return {"ok": True}
@@ -177,14 +210,18 @@ def logout(request: Request, response: Response):
 
 
 class Password(BaseModel):
-    current: str
-    new: str = Field(min_length=12)
+    current: str = Field(max_length=auth.MAX_PASSWORD)
+    new: str = Field(min_length=12, max_length=auth.MAX_PASSWORD)
 
 
 @api.put("/account/password")
 def change_password(body: Password, user: str = Depends(require_user)):
-    if db.get("auth_mode") != "local" or not auth.verify_password(body.current, db.get("local_password_hash")):
+    if db.get("auth_mode") != "local":
+        raise HTTPException(400, "Local login is not enabled")
+    key = auth.attempt(f"account:{user}")
+    if not auth.verify_password(body.current, db.get("local_password_hash")):
         raise HTTPException(400, "Current password is wrong")
+    auth.forgive(key)
     db.put("local_password_hash", auth.hash_password(body.new))
     auth.drop_all_sessions()
     db.audit(user, "account.password")
@@ -224,6 +261,8 @@ def overview(request: Request, user: str = Depends(require_user)):
                                      "WHERE kind='apply' ORDER BY id DESC LIMIT 1")),
         "crowdsec_mode": db.get("crowdsec_mode"), "interval_hours": db.get("interval_hours"),
         "asn_names": db.q1("SELECT count(*) n FROM asn_names")["n"],
+        "untrusted_proxy": auth.untrusted_proxy(request) if db.get("auth_mode") == "local" else None,
+        "broad_proxies": auth.broad_trusted_proxies() if db.get("auth_mode") == "proxy" else [],
     }
 
 
@@ -273,6 +312,8 @@ class AsnRule(BaseModel):
 
 @api.put("/asns")
 def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
+    if len(rules) > 5000:
+        raise HTTPException(422, "At most 5000 rules per request")
     blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
     if blocked:
         raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
@@ -402,11 +443,17 @@ def list_exemptions():
     return rows
 
 
+def _asn(v: str) -> int:
+    digits = v.strip().upper().removeprefix("AS")
+    if not re.fullmatch(r"[0-9]{1,10}", digits) or not 0 < int(digits) < 2**32:
+        raise ValueError(v)
+    return int(digits)
+
+
 @api.post("/exemptions")
 def add_exemption(e: Exemption, user: str = Depends(require_user)):
     try:
-        value = str(int(e.value.upper().removeprefix("AS"))) if e.kind == "asn" else \
-            str(ipaddress.ip_network(e.value.strip(), strict=False))
+        value = str(_asn(e.value)) if e.kind == "asn" else str(ipaddress.ip_network(e.value.strip(), strict=False))
     except ValueError:
         raise HTTPException(422, f"Invalid: {e.value}")
     with db.tx() as c:
@@ -529,7 +576,8 @@ PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_p
 
 @api.get("/settings")
 def get_settings():
-    return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password"))}
+    return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password")),
+                                                      "notify_url": notify.mask(db.get("notify_url"))}
 
 
 class Settings(BaseModel):
@@ -543,6 +591,11 @@ class Settings(BaseModel):
     trusted_proxies: list[str]
     auth_user_header: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
 
+    @field_validator("auth_user_header")
+    @classmethod
+    def _header(cls, v):
+        return auth.check_user_header(v)
+
     @field_validator("trusted_proxies")
     @classmethod
     def _cidrs(cls, v):
@@ -551,6 +604,8 @@ class Settings(BaseModel):
 
 @api.put("/settings")
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
+    if s.notify_url and s.notify_url == notify.mask(db.get("notify_url")):
+        s.notify_url = db.get("notify_url")  # unchanged masked value from the form: keep the secret
     if s.decision_hours < s.interval_hours * 2:
         raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
@@ -563,7 +618,7 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
             db.put(k, v, c)
         if affects:
             db.bump_rev(c)
-    db.audit(user, "settings.put", s.model_dump())
+    db.audit(user, "settings.put", s.model_dump() | {"notify_url": notify.mask(s.notify_url)})
     return {"ok": True}
 
 
@@ -577,7 +632,7 @@ def notify_test():
 
 class CrowdSecCfg(BaseModel):
     mode: Literal["lapi", "docker"]
-    lapi_url: str = Field("http://crowdsec:8080", pattern=r"^https?://[^\s/]+(:\d+)?/?$")
+    lapi_url: str = Field("http://crowdsec:8080", pattern=r"^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?/?$")
     machine_id: str = Field("", max_length=128)
     password: str = Field("", max_length=512)   # empty = keep the current one
     container: str = Field("crowdsec", pattern=r"^[\w.-]{1,128}$")
@@ -585,7 +640,11 @@ class CrowdSecCfg(BaseModel):
 
 @api.put("/crowdsec")
 def put_crowdsec(cfg: CrowdSecCfg, user: str = Depends(require_user)):
-    password = cfg.password or db.get("lapi_password")
+    # The stored password is only reused for the same LAPI and machine – otherwise it could be sent to any URL
+    same = cfg.lapi_url == db.get("lapi_url") and cfg.machine_id == db.get("lapi_machine_id")
+    password = cfg.password or (db.get("lapi_password") if same else "")
+    if cfg.mode == "lapi" and not password:
+        raise HTTPException(422, "Enter the machine password (required when URL or machine ID change)")
     try:
         msg = (crowdsec.Lapi(cfg.lapi_url, cfg.machine_id, password) if cfg.mode == "lapi"
                else crowdsec.DockerCli(cfg.container)).test()
@@ -650,7 +709,7 @@ def get_preview():
 
 
 @api.get("/runs")
-def list_runs(limit: int = 30):
+def list_runs(limit: int = Query(30, ge=1, le=500)):
     return [_run_row(r) for r in db.q("SELECT id,kind,status,triggered_by,started_at,finished_at,summary FROM runs "
                                       "ORDER BY id DESC LIMIT ?", (min(limit, 100),))]
 
@@ -670,7 +729,7 @@ def ranges(typ: Literal["ban", "captcha"]):
 
 
 @api.get("/audit")
-def audit_log(limit: int = 200):
+def audit_log(limit: int = Query(200, ge=1, le=1000)):
     return db.q("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (min(limit, 1000),))
 
 

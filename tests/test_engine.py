@@ -5,7 +5,7 @@ import pytest
 from app import crowdsec, db, engine, sources
 from tests.conftest import FakeBackend
 
-PREFIXES = {1: ["10.0.0.0/16"], 2: ["10.0.0.0/8", "2001:db8::/32"], 3: ["10.0.7.0/24"]}
+PREFIXES = {1: ["11.0.0.0/16"], 2: ["11.0.0.0/8", "2a00:1::/32"], 3: ["11.0.7.0/24"]}
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def env(monkeypatch):
         id, name = "nordvpn", "NordVPN"
 
         def fetch(self):
-            return [("DE", "Germany", "10.0.5.9"), ("NO", "Norway", "10.0.6.9")]
+            return [("DE", "Germany", "11.0.5.9"), ("NO", "Norway", "11.0.6.9")]
 
     monkeypatch.setitem(sources.PROVIDERS, "nordvpn", P())
     monkeypatch.setattr(sources, "_public_ip", lambda v: v)  # test networks are not "global"
@@ -27,7 +27,7 @@ def env(monkeypatch):
     with db.tx() as c:
         c.execute("INSERT INTO asn_rules(asn,name,action,updated_at) VALUES(1,'a','ban',0),(2,'b','captcha',0)")
         c.execute("INSERT INTO vpn_rules VALUES('nordvpn','DE')")
-        c.execute("INSERT INTO exemptions(kind,value) VALUES('asn','3'),('cidr','10.1.0.0/16')")
+        c.execute("INSERT INTO exemptions(kind,value) VALUES('asn','3'),('cidr','11.1.0.0/16')")
     return be
 
 
@@ -43,13 +43,13 @@ def test_apply_carves_exemptions_and_separates_types(env):
     engine.run("apply", "test")
     assert last_run()["status"] == "ok", last_run()["log"]
     ban, cap = applied("ban"), applied("captcha")
-    assert "10.0.5.9" not in str(ban)
-    assert engine.status_of("10.0.5.9", {"ban": list(ban)}) is None       # VPN exempted exactly
-    assert engine.status_of("10.0.5.10", {"ban": list(ban)}) == "ban"     # neighbouring IP stays blocked
-    assert engine.status_of("10.0.7.1", {"ban": list(ban)}) is None       # exempt ASN
-    assert engine.status_of("10.1.2.3", {"captcha": list(cap)}) is None   # manual exemption
-    assert engine.status_of("10.0.1.1", {"captcha": list(cap)}) is None   # no captcha under ban
-    assert engine.status_of("10.200.0.1", {"captcha": list(cap)}) == "captcha"
+    assert "11.0.5.9" not in str(ban)
+    assert engine.status_of("11.0.5.9", {"ban": list(ban)}) is None       # VPN exempted exactly
+    assert engine.status_of("11.0.5.10", {"ban": list(ban)}) == "ban"     # neighbouring IP stays blocked
+    assert engine.status_of("11.0.7.1", {"ban": list(ban)}) is None       # exempt ASN
+    assert engine.status_of("11.1.2.3", {"captcha": list(cap)}) is None   # manual exemption
+    assert engine.status_of("11.0.1.1", {"captcha": list(cap)}) is None   # no captcha under ban
+    assert engine.status_of("11.200.0.1", {"captcha": list(cap)}) == "captcha"
     assert not any(":" in v for v in ban | cap)                            # IPv6 off
     assert {d["value"] for d in env.decisions if d["type"] == "ban"} == ban
 
@@ -65,7 +65,7 @@ def test_second_run_is_noop_then_diff(env):
     engine.run("apply", "test")
     s = __import__("json").loads(last_run()["summary"])
     assert s["ban_added"] >= 1 and s["ban_removed"] >= 1
-    assert engine.status_of("10.0.7.1", {"ban": list(applied("ban"))}) == "ban"
+    assert engine.status_of("11.0.7.1", {"ban": list(applied("ban"))}) == "ban"
 
 
 def test_add_happens_before_delete(env):
@@ -116,10 +116,10 @@ def test_sanity_blocks_large_change(env):
 
 def test_watch_ip_hit(env):
     with db.tx() as c:
-        c.execute("INSERT INTO watch_ips(ip) VALUES('10.0.9.9'),('10.0.5.9')")
+        c.execute("INSERT INTO watch_ips(ip) VALUES('11.0.9.9'),('11.0.5.9')")
     engine.run("apply", "test")
     st = {r["ip"]: r["last_status"] for r in db.q("SELECT * FROM watch_ips")}
-    assert st == {"10.0.9.9": "ban", "10.0.5.9": "clear"}
+    assert st == {"11.0.9.9": "ban", "11.0.5.9": "clear"}
 
 
 def test_plan_does_not_write(env):
@@ -191,3 +191,30 @@ def test_dns_failure_is_reported(monkeypatch):
     monkeypatch.setattr(sources, "_resolve", lambda h: [])
     with pytest.raises(sources.SourceError, match="DNS resolution"):
         S().ips("DE")
+
+
+def test_poisoned_source_cannot_block_private_or_huge_ranges(env, monkeypatch):
+    poisoned = {**PREFIXES, 1: ["11.0.0.0/16", "0.0.0.0/1", "10.0.0.0/8", "127.0.0.0/8", "192.168.0.0/16", "::/0"]}
+    monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: poisoned[a])
+    engine.run("apply", "test")
+    assert last_run()["status"] == "ok", last_run()["log"]
+    assert "implausibly large" in last_run()["log"]
+    ranges = {t: list(applied(t)) for t in ("ban", "captcha")}
+    for ip in ("10.1.2.3", "127.0.0.1", "192.168.1.1", "8.8.8.8"):
+        assert engine.status_of(ip, ranges) is None, ip
+
+
+def test_sanity_caps_address_space_even_on_first_run(env, monkeypatch):
+    many = {**PREFIXES, 1: [f"{i}.0.0.0/8" for i in range(11, 60)]}   # 49 /8s ≈ 19 % of IPv4
+    monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: many[a])
+    engine.run("apply", "test")
+    assert last_run()["status"] == "blocked" and "IPv4 addresses" in last_run()["log"]
+    assert env.decisions == []
+
+
+def test_sanity_detects_address_space_jump_with_same_range_count(env, monkeypatch):
+    engine.run("apply", "test")
+    halved = {**PREFIXES, 2: ["11.0.0.0/9", "2a00:1::/32"]}   # same structure, half the address space
+    monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: halved[a])
+    engine.run("apply", "test")
+    assert last_run()["status"] == "blocked" and "address space" in last_run()["log"], last_run()["log"]

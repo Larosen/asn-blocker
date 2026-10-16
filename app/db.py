@@ -79,6 +79,7 @@ def q1(sql, args=()):
 
 
 def init():
+    os.umask(0o077)  # also covers the -wal/-shm files, which contain the same secrets
     with _write_lock:
         conn().executescript(SCHEMA)
     try:
@@ -86,6 +87,13 @@ def init():
     except OSError:
         pass
     _migrate_prototype()
+
+
+def prune():
+    """Bounded growth: drop stale cache entries (IP lookups etc.) and keep the newest 20,000 audit entries."""
+    with tx() as c:
+        c.execute("DELETE FROM cache WHERE fetched_at < ?", (time.time() - 7 * 86400,))
+        c.execute("DELETE FROM audit_log WHERE id <= (SELECT max(id) FROM audit_log) - 20000")
 
 
 # --- Settings --------------------------------------------------------------------

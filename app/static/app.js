@@ -20,8 +20,8 @@ function ago(ts) {
   if (a < 172800) return rtf.format(Math.round(s / 3600), "hour");
   return rtf.format(Math.round(s / 86400), "day");
 }
-const act = (a) => ({ ban: t("Block"), captcha: t("Captcha") }[a] ?? a);
-const runStatus = (s) => ({ ok: t("succeeded"), failed: t("failed"), blocked: t("stopped"), running: t("running") }[s] ?? s);
+const act = (a) => ({ ban: t("Block"), captcha: t("Captcha") }[a] ?? esc(a));
+const runStatus = (s) => ({ ok: t("succeeded"), failed: t("failed"), blocked: t("stopped"), running: t("running") }[s] ?? esc(s));
 const CONTINENTS = ["EU", "NA", "SA", "AS", "OC", "AF", "AN", ""];
 const continentName = (c) => ({ EU: t("Europe"), NA: t("North America"), SA: t("South America"), AS: t("Asia"), AF: t("Africa"),
   OC: t("Oceania"), AN: t("Antarctica") }[c] ?? t("Other"));
@@ -201,6 +201,8 @@ function renderBanners() {
   if (!ov.crowdsec_mode) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("CrowdSec is not connected yet.")}</span><a class="btn sm" href="#/settings">${t("Set up")}</a></div>`);
   if (ov.me?.status) b.push(`<div class="banner danger" role="alert"><span class="dot ban"></span><span>${t("Your IP {ip} is currently affected by {action}. You risk locking yourself out.", { ip: `<code>${esc(ov.me.ip)}</code>`, action: `<b>${act(ov.me.status)}</b>` })}</span>
     <button class="btn sm" data-exempt-me="${esc(ov.me.ip)}">${t("Add as exemption")}</button></div>`);
+  if (ov.untrusted_proxy) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Requests arrive through proxy {ip}, which is not a trusted proxy. Sign-in throttling then applies to everyone behind it together.", { ip: `<code>${esc(ov.untrusted_proxy)}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
+  if (ov.broad_proxies?.length) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Trusted proxies {nets} cover more than one address. Every host in them can send any username header – trust only the proxy's own IP.", { nets: `<code>${esc(ov.broad_proxies.join(", "))}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
   if (ov.last_apply?.status === "failed") b.push(`<div class="banner danger"><span class="dot failed"></span><span>${t("Last run failed ({when}).", { when: ago(ov.last_apply.started_at) })}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Details")}</a></div>`);
   if (ov.last_apply?.status === "blocked") b.push(`<div class="banner warn"><span class="dot blocked"></span><span>${t("The last run was stopped by the sanity check.")}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Review")}</a></div>`);
   $("#banners").innerHTML = b.join("");
@@ -586,7 +588,7 @@ async function viewSettings(el) {
       <pre class="cmd">docker exec crowdsec cscli machines add asn-blocker --auto -f -</pre>
       <label class="field"><span>${t("LAPI URL")}</span><input type="url" name="url" class="mono" value="${esc(s.lapi_url)}"><small>${t("Both containers must share a Docker network.")}</small></label>
       <label class="field"><span>${t("Machine ID")}</span><input type="text" name="mid" class="mono" value="${esc(s.lapi_machine_id || "asn-blocker")}"></label>
-      <label class="field"><span>${t("Password")}</span><input type="password" name="pw" class="mono" autocomplete="off" placeholder="${s.lapi_password_set ? t("saved – leave empty to keep") : ""}"></label>
+      <label class="field"><span>${t("Password")}</span><input type="password" name="pw" class="mono" autocomplete="off" placeholder="${s.lapi_password_set ? t("saved – leave empty to keep (required again if URL or machine ID change)") : ""}"></label>
     </div>
     <div data-cs="docker" hidden><div class="note danger small">${t("This requires mounting /var/run/docker.sock. Whoever takes over the UI then has root on the host.")}</div>
       <label class="field"><span>${t("Container name")}</span><input type="text" name="container" class="mono" value="${esc(s.docker_container)}"></label></div>
@@ -653,7 +655,8 @@ async function viewSettings(el) {
   }));
   $("#imp").onchange = guard(async (e) => {
     const data = JSON.parse(await e.target.files[0].text());
-    if (!(await confirmDlg(t("Import configuration"), t("{a} ASN rules, {e} exemptions and {v} VPN countries will be added or overwritten.", { a: data.asns?.length || 0, e: data.exemptions?.length || 0, v: data.vpn?.length || 0 }), t("Import")))) return;
+    const count = (x) => (Array.isArray(x) ? x.length : 0);
+    if (!(await confirmDlg(t("Import configuration"), t("{a} ASN rules, {e} exemptions and {v} VPN countries will be added or overwritten.", { a: count(data.asns), e: count(data.exemptions), v: count(data.vpn) }), t("Import")))) return;
     await api("/import", { method: "POST", body: data }); toast(t("Imported")); refreshOverview();
   });
   $("#cleanup").onsubmit = guard(async (e) => {

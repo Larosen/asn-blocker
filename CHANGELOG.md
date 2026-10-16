@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.1 (2026-10-16) – security hardening
+Result of a full security review (auth, injection/SSRF, frontend, container and supply chain).
+- **Sign-in:** the login throttle counts attempts before the password check (parallel requests could run ~9× the
+  allowed guesses and spike memory above 1 GB); at most 2 concurrent password hashes; IPv6 throttled per /64;
+  constant-time username check; setup token stored hashed, single use, not throttled per IP (could lock the admin
+  out of setup); `reset-auth` prints a fresh token and needs no restart
+- **Proxy mode:** a username header sent twice is rejected; standard headers (User-Agent, Host, …) can no longer be
+  chosen as identity header; warnings when trusted proxies cover more than one address or when local login runs
+  behind an untrusted proxy
+- **Data sources:** private/reserved ranges are never blocked and prefixes shorter than /8 (IPv6 /16) are ignored;
+  the sanity check also compares blocked IPv4 address space and caps it at 2^29 addresses, even on the first run;
+  downloads are size- and time-limited and only follow same-host https redirects
+- **Secrets:** the stored LAPI password is only reused for the same URL and machine ID; LAPI errors no longer echo
+  response bodies; notification URLs are masked in the UI and audit log and no longer appear in logs; the database's
+  WAL/SHM files are no longer world-readable
+- **CrowdSec:** cleaning up old decisions only removes `cscli`/`cscli-import` decisions, never CrowdSec's own
+  detections or blocklists
+- **Frontend:** import dialog counts only arrays (HTML injection via crafted file); security headers on every response
+- **Container:** no user site-packages (no code persistence via the data volume), no setuid binaries, compose with
+  hardening and resource limits by default, all dependencies pinned with hashes
+- **CI:** `:latest` and version tags are published only after Trivy scanned both architectures; pull requests are
+  scanned too and build with a read-only token; checkouts without persisted credentials
+
 ## 0.5.0 (2026-10-16)
 - OLED black theme (pure black for OLED screens) and an explicit theme switch: Auto / Light / Dark / OLED black, remembered per browser
 - Improved mobile layout

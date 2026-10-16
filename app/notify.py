@@ -6,6 +6,16 @@ from . import db
 from .sources import USER_AGENT
 
 
+def mask(url):
+    """Notification URLs carry their secret in path, query or userinfo (ntfy topic, Gotify token, webhook path):
+    only scheme and host are shown again."""
+    if not url:
+        return url or ""
+    u = httpx.URL(url)
+    port = f":{u.port}" if u.port else ""
+    return f"{u.scheme}://{u.host}{port}/***"
+
+
 def send(title, message, level="error"):
     url, fmt = db.get("notify_url"), db.get("notify_format")
     if not url:
@@ -20,4 +30,4 @@ def send(title, message, level="error"):
         else:
             httpx.post(url, json={"title": title, "message": message, "level": level, "source": "asn-blocker"}, timeout=15)
     except httpx.HTTPError as e:
-        logging.getLogger("asn_blocker.notify").warning("Notification failed: %s", e)
+        logging.getLogger("asn_blocker.notify").warning("Notification failed: %s", type(e).__name__)

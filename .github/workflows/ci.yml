@@ -11,10 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: pip install -r requirements-dev.txt
+      - run: pip install --require-hashes --no-deps -r requirements.txt && pip install -r requirements-dev.txt
       - run: ruff check app tests
       - run: pytest -q
 
@@ -27,10 +29,12 @@ jobs:
       CROWDSEC_MACHINE_ID: asn-blocker
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - run: pip install -r requirements-dev.txt
+      - run: pip install --require-hashes --no-deps -r requirements.txt && pip install -r requirements-dev.txt
       - name: Start CrowdSec
         run: |
           docker run -d --name crowdsec -p 127.0.0.1:8080:8080 -v cs-data:/var/lib/crowdsec/data \
@@ -45,16 +49,43 @@ jobs:
       - if: failure()
         run: docker logs crowdsec | tail -50
 
+  # Pull requests: build and scan locally, nothing is pushed, read-only token
+  image-pr:
+    if: github.event_name == 'pull_request'
+    needs: [test, lapi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: asn-blocker:pr
+      - name: Trivy scan
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro
+          aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+          image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 asn-blocker:pr
+
+  # main / tags: push an immutable sha-* tag first; latest and version tags only after the scan passed
   image:
+    if: github.event_name == 'push'
     needs: [test, lapi]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Image name (GHCR requires lowercase)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -63,14 +94,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
-          tags: |
-            type=ref,event=pr
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+          tags: type=sha,format=long
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -80,28 +105,76 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          load: false
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           provenance: mode=max
+
+  scan:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - name: Image name (GHCR requires lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
       # Trivy run directly as an image (pinned by digest) instead of trivy-action
       - name: Trivy scan
-        if: github.event_name != 'pull_request'
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
         run: >
           docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD
           aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
-          image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
-          "${IMAGE}@${{ steps.build.outputs.digest }}"
+          image --platform "$PLATFORM" --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1
+          "${IMAGE}@${DIGEST}"
+
+  release:
+    needs: [image, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Image name (GHCR requires lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the scanned image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          args=()
+          for t in $TAGS; do args+=(-t "$t"); done
+          if [ ${#args[@]} -gt 0 ]; then docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"; fi
       # Attestations are not available for private repos of personal accounts; the
       # SLSA provenance is still attached to the image by buildx (provenance: mode=max).
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: github.event_name != 'pull_request' && !github.event.repository.private
+        if: ${{ !github.event.repository.private }}
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ needs.image.outputs.digest }}
           push-to-registry: true

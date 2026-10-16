@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import socket
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,14 +25,41 @@ class SourceError(RuntimeError):
     pass
 
 
+MAX_BYTES = 64 * 2**20  # largest real response: NordVPN server list, ~27 MB
+
+
+def _fetch(url, params, timeout):
+    """GET with a hard size cap (after decompression), an overall deadline and redirects only to https on the
+    same host."""
+    deadline = time.monotonic() + timeout
+    host = httpx.URL(url).host
+    for _ in range(4):
+        with httpx.stream("GET", url, params=params, timeout=min(timeout, 30), follow_redirects=False,
+                          headers={"User-Agent": USER_AGENT}) as r:
+            if r.is_redirect:
+                nxt = r.url.join(r.headers.get("location", ""))
+                if nxt.scheme != "https" or nxt.host != host:
+                    raise httpx.HTTPError(f"refused redirect to {nxt.scheme}://{nxt.host}")
+                url, params = str(nxt), None
+                continue
+            r.raise_for_status()
+            buf = bytearray()
+            for chunk in r.iter_bytes():
+                buf += chunk
+                if len(buf) > MAX_BYTES:
+                    raise httpx.HTTPError(f"response larger than {MAX_BYTES // 2**20} MB")
+                if time.monotonic() > deadline:
+                    raise httpx.HTTPError(f"no complete response within {timeout} s")
+            return bytes(buf), r.encoding or "utf-8"
+    raise httpx.HTTPError("too many redirects")
+
+
 def http_get(url, params=None, timeout=60, as_text=False):
     last = None
     for _ in range(3):
         try:
-            r = httpx.get(url, params=params, timeout=timeout, follow_redirects=True,
-                          headers={"User-Agent": USER_AGENT})
-            r.raise_for_status()
-            return r.text if as_text else r.json()
+            body, enc = _fetch(url, params, timeout)
+            return body.decode(enc, errors="replace") if as_text else json.loads(body)
         except (httpx.HTTPError, ValueError) as e:
             last = e
     raise SourceError(f"{url}: {last}")
@@ -56,7 +84,7 @@ def refresh_asn_names():
     with db.tx() as c:
         c.execute("DELETE FROM asn_names")
         c.executemany("INSERT INTO asn_names VALUES(?,?,?,?)", rows)
-        db.put("asn_names_updated", __import__("time").time(), c)
+        db.put("asn_names_updated", time.time(), c)
     return len(rows)
 
 
@@ -105,7 +133,9 @@ def asn_prefixes(asn, use_cache=True):
     prefixes = _ripe("announced-prefixes", f"AS{asn}").get("prefixes")
     if prefixes is None:
         raise SourceError(f"AS{asn}: invalid response from RIPEstat")
-    out = sorted({p["prefix"] for p in prefixes})
+    if not isinstance(prefixes, list):
+        raise SourceError(f"AS{asn}: invalid response from RIPEstat")
+    out = sorted({p["prefix"] for p in prefixes if isinstance(p, dict) and isinstance(p.get("prefix"), str)})
     db.cache_put(key, out)
     return out
 
@@ -141,10 +171,10 @@ def spamhaus_asndrop(use_cache=True):
             o = json.loads(line)
         except ValueError:
             continue
-        if isinstance(o.get("asn"), int):
+        if isinstance(o, dict) and type(o.get("asn")) is int and 0 < o["asn"] < 2**32:
             out.append({"asn": o["asn"], "name": o.get("asname", ""), "cc": o.get("cc", "")})
-    if not out:
-        raise SourceError("Spamhaus ASN-DROP: empty list")
+    if not out or len(out) > 20000:
+        raise SourceError(f"Spamhaus ASN-DROP: implausible list ({len(out)} entries)")
     db.cache_put("spamhaus_asndrop", out)
     return out
 
@@ -172,7 +202,7 @@ class Provider:
         key = f"vpn:{self.id}"
         hit = db.cache_get(key, PROVIDER_TTL)
         if hit is None:
-            hit = [list(e) for e in self.fetch() if e[0] and e[2]]
+            hit = [[str(e[0]), str(e[1]), str(e[2])] for e in self.fetch() if e[0] and e[2]]
             if not hit:
                 raise SourceError(f"{self.name}: empty server list")
             db.cache_put(key, hit)
@@ -202,8 +232,8 @@ class Provider:
 
 def _resolve(host):
     try:
-        return [i[4][0] for i in socket.getaddrinfo(host, None)]
-    except OSError:
+        return [i[4][0] for i in socket.getaddrinfo(str(host), None)]
+    except (OSError, UnicodeError, ValueError):
         return []
 
 
