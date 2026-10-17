@@ -270,7 +270,7 @@ blocked, and which rule or exemption applies – with buttons to block its netwo
 | | |
 |---|---|
 | **Validate before writing** | If a data source fails or returns invalid data, the run aborts and CrowdSec stays unchanged. |
-| **Sanity check** | If the number of ranges or the blocked IPv4 or IPv6 address space changes by more than 30 % (configurable), the run stops and waits for your confirmation under **Runs**. Hard limits apply even to the first run: 150,000 ranges, 2^29 IPv4 addresses and 2^36 IPv6 /48 networks. |
+| **Sanity check** | If the number of ranges or the blocked IPv4 or IPv6 address space changes by more than 30 % (configurable) – e.g. after adding many ASNs or enabling IPv6 – the run stops and a dialog shows why. **Apply anyway** applies exactly the reviewed result; if the data changed meanwhile, the run stops again. Hard limits apply even to the first run: 150,000 ranges, 2^29 IPv4 addresses and 2^36 IPv6 /48 networks. |
 | **Implausible data is ignored** | Private and reserved ranges are never blocked; prefixes larger than /8 (IPv6 /16) are discarded. |
 | **No gaps** | New ranges are added before outdated ones are removed. |
 | **Decisions expire** | Decisions last 7 days (configurable) and are renewed by every run, so nothing lingers if asn-blocker is removed. |
@@ -342,7 +342,7 @@ decision duration. Then delete the machine in CrowdSec:
 | "Not signed in" behind the proxy | The proxy's IP changed or it does not send the username header – see [Behind a reverse proxy](#behind-a-reverse-proxy-with-sso-recommended) |
 | "LAPI not reachable" | asn-blocker and CrowdSec must share a Docker network; use the container name in the URL (`http://crowdsec:8080`) |
 | "LAPI login failed" | Wrong machine ID or password; create new credentials with `cscli machines add` |
-| Run stopped by the sanity check | Review the planned changes under **Runs** and confirm with **Apply anyway** if they are expected |
+| Run stopped by the sanity check | The dialog, the banner and the run under **Runs** show the reason; click **Apply anyway** if the change is expected |
 | Captcha has no effect | Your bouncer cannot show captchas (firewall bouncers can't) |
 | "Active SSH sessions: not available" | The session registry is not mounted – add `/run/systemd/sessions:/host/sessions:ro` and recreate the container with `docker compose up -d` |
 | Surfshark countries fail | Surfshark only publishes hostnames; the container needs working DNS |

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2 (2026-10-17)
+- **Stopped runs are confirmed in one step**: when the sanity check stops a run, a dialog shows every reason with
+  *Apply anyway*, *Review changes* and *Not now*; the banner and the apply bar offer *Apply anyway* too, instead of a
+  plain *Apply* that stopped again
+- *Apply anyway* applies exactly the reviewed result: if the recomputed ranges differ by more than 5 % and still trip a
+  check, the run stops again; only the latest stopped run can be confirmed
+- All stop reasons are recorded (previously only the first), e.g. IPv6 newly enabled and range count together
+
 ## 0.6.1 (2026-10-17)
 - README: screenshots of the overview, ASN search, suggestions, VPN exemptions and a run; safeguards updated
 - ASN search placeholder uses a neutral example IP

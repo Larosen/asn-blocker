@@ -130,6 +130,7 @@ td input.inline:hover, td input.inline:focus { border-color: var(--line-strong);
 .banner.danger { background: var(--ban-bg); }
 .note { padding: 10px 12px; border-left: 3px solid var(--line-strong); background: var(--sunken); margin: 8px 0 12px; }
 .note.warn { border-color: var(--cap); } .note.danger { border-color: var(--ban); }
+.note ul, .db ul { margin: 6px 0 0; padding-left: 20px; } .note li, .db li { margin: 2px 0; }
 pre.log { margin: 0; padding: 12px; background: var(--sunken); font-family: var(--mono); font-size: 12px; max-height: 420px; overflow: auto; white-space: pre-wrap; border-radius: var(--r); }
 .diff-add { color: var(--ok); } .diff-del { color: var(--ban); }
 

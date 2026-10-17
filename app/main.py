@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 
 @asynccontextmanager
@@ -805,7 +805,7 @@ def cleanup(body: Cleanup, user: str = Depends(require_user)):
 
 class RunReq(BaseModel):
     kind: Literal["plan", "apply"]
-    force: bool = False
+    confirm: int | None = None  # ID of the stopped run whose result the user reviewed and accepts
 
 
 @api.post("/runs")
@@ -814,16 +814,22 @@ def start_run(body: RunReq, user: str = Depends(require_user)):
         raise HTTPException(409, "A run is already in progress")
     if body.kind == "apply" and not db.get("crowdsec_mode"):
         raise HTTPException(409, "CrowdSec connection is not set up yet")
+    confirmed = None
+    if body.confirm is not None:
+        last = _run_row(db.q1("SELECT id,status,summary FROM runs WHERE kind='apply' ORDER BY id DESC LIMIT 1"))
+        if body.kind != "apply" or not last or last["id"] != body.confirm or last["status"] != "blocked":
+            raise HTTPException(409, "Only the latest stopped run can be confirmed")
+        confirmed = (last["id"], last["summary"] or {})
 
     def go():
         try:
-            engine.run(body.kind, user, body.force)
+            engine.run(body.kind, user, confirmed=confirmed)
         except engine.Busy:
             pass
 
     threading.Thread(target=go, daemon=True).start()
     if body.kind == "apply":
-        db.audit(user, "run.apply", {"force": body.force})
+        db.audit(user, "run.apply", {"confirmed_run": body.confirm} if body.confirm else None)
     return {"ok": True}
 
 
