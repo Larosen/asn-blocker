@@ -28,14 +28,16 @@ def _cstr(b: bytes) -> str:
     return b.split(b"\0", 1)[0].decode(errors="replace")
 
 
+def _canonical(a):
+    return a.ipv4_mapped if a.version == 6 and a.ipv4_mapped else a
+
+
 def _addr(host: str, addr_v6) -> str | None:
-    try:
-        return str(ipaddress.ip_address(host))
-    except ValueError:
-        pass
+    """Only ut_addr_v6, which sshd fills in. ut_host is free text that local tools writing utmp (e.g. via
+    libutempter) can set to anything – trusting it would let a local user exempt any IP."""
     if any(addr_v6[1:]):
         raw = struct.pack("<4i", *addr_v6)
-        return str(ipaddress.IPv6Address(raw))
+        return str(_canonical(ipaddress.IPv6Address(raw)))
     if addr_v6[0]:
         return str(ipaddress.IPv4Address(struct.pack("<i", addr_v6[0])))
     return None
@@ -43,7 +45,7 @@ def _addr(host: str, addr_v6) -> str | None:
 
 def _global_ip(host: str) -> str | None:
     try:
-        a = ipaddress.ip_address(host.strip().removeprefix("[").removesuffix("]"))
+        a = _canonical(ipaddress.ip_address(host.strip().removeprefix("[").removesuffix("]")))
     except ValueError:
         return None
     return str(a) if a.is_global else None
@@ -126,7 +128,7 @@ def protect_ip(ip: str, note: str, with_asn: bool = True):
     """Protects an IP and (optionally) its ASN. Returns the protected ASNs."""
     from . import sources
 
-    ip = str(ipaddress.ip_address(ip))
+    ip = str(_canonical(ipaddress.ip_address(ip)))
     add("ip", ip, note)
     asns = []
     if with_asn and ipaddress.ip_address(ip).is_global:

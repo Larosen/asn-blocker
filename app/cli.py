@@ -82,7 +82,7 @@ def check_sources() -> bool:
 
     width = max(len(r[1]) for r in results)
     for ok, name, detail, dt in results:
-        print(f"{'OK  ' if ok else 'FAIL'} {name:<{width}}  {dt:5.1f}s  {detail}")
+        print(f"{'OK  ' if ok else 'FAIL'} {name:<{width}}  {dt:5.1f}s  {sources.clean(detail, 200)}")
     failed = [r for r in results if not r[0]]
     print(f"\n{len(results) - len(failed)}/{len(results)} sources OK")
     return not failed
@@ -93,10 +93,10 @@ def protect(args) -> bool:
         sessions, status = selfprotect.ssh_sessions()
         print(f"SSH sessions ({status}):")
         for s in sessions:
-            print(f"  {s['ip']:<40} {s['user']}@{s['line']}")
+            print(f"  {s['ip']:<40} {sources.clean(s['user'], 40)}@{sources.clean(s['line'], 40)}")
         print("Protected:")
         for r in selfprotect.protected():
-            print(f"  {r['kind']:<4} {r['value']:<40} {r['note']}")
+            print(f"  {r['kind']:<4} {r['value']:<40} {sources.clean(r['note'], 80)}")
         return True
     ips = [a for a in args if not a.startswith("--")]
     ip = ips[0] if ips else (os.environ.get("SSH_CLIENT") or os.environ.get("SSH_CONNECTION") or "").split(" ")[0]
@@ -105,16 +105,20 @@ def protect(args) -> bool:
               "Run from the SSH session with: docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect")
         return False
     try:
+        if not ipaddress.ip_address(ip).is_global:
+            print(f"{ip} is not a public address (e.g. a VPN, Tailscale or bastion address). Protect the public IP you "
+                  "connect from instead: docker exec asn-blocker python -m app.cli protect <public-ip>")
+            return False
         asns = selfprotect.protect_ip(ip, "SSH (CLI)", with_asn="--ip-only" not in args)
     except ValueError:
-        print(f"Not a valid IP: {ip}")
+        print(f"Not a valid IP: {sources.clean(ip, 60)}")
         return False
     except sources.SourceError as e:
-        print(f"IP {ip} protected, could not determine ASN: {e}")
+        print(f"IP {ip} protected, could not determine ASN: {sources.clean(e)}")
         return False
     with db.tx() as c:
         removed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
-    print(f"Protected: {ip}" + "".join(f", AS{a} {sources.asn_name(a)}" for a in asns))
+    print(f"Protected: {ip}" + "".join(f", AS{a} {sources.clean(sources.asn_name(a), 60)}" for a in asns))
     if removed:
         print("Removed block rules: " + ", ".join(f"AS{a}" for a in removed))
     print("Takes effect on the next run – click 'Apply' in the web UI.")

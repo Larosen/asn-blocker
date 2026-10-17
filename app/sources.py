@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -29,44 +30,73 @@ class SourceError(RuntimeError):
     pass
 
 
-MAX_BYTES = 64 * 2**20  # largest real response: NordVPN server list, ~27 MB
+MAX_BYTES = 16 * 2**20  # default size cap per response (after decompression); largest real one: bgp.tools ~6 MB
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
-def _fetch(url, params, timeout):
-    """GET with a hard size cap (after decompression), an overall deadline and redirects only to https on the
-    same host."""
+def clean(value, limit=120):
+    """External text for logs and messages: no control or bidi characters (forged log lines), bounded length."""
+    s = _CONTROL.sub("?", str(value))
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _fetch_once(url, params, timeout, max_bytes, client_box):
     deadline = time.monotonic() + timeout
     host = httpx.URL(url).host
-    for _ in range(4):
-        with httpx.stream("GET", url, params=params, timeout=min(timeout, 30), follow_redirects=False,
-                          headers={"User-Agent": USER_AGENT}) as r:
-            if r.is_redirect:
-                nxt = r.url.join(r.headers.get("location", ""))
-                if nxt.scheme != "https" or nxt.host != host:
-                    raise httpx.HTTPError(f"refused redirect to {nxt.scheme}://{nxt.host}")
-                url, params = str(nxt), None
-                continue
-            r.raise_for_status()
-            buf = bytearray()
-            for chunk in r.iter_bytes():
-                buf += chunk
-                if len(buf) > MAX_BYTES:
-                    raise httpx.HTTPError(f"response larger than {MAX_BYTES // 2**20} MB")
-                if time.monotonic() > deadline:
-                    raise httpx.HTTPError(f"no complete response within {timeout} s")
-            return bytes(buf), r.encoding or "utf-8"
-    raise httpx.HTTPError("too many redirects")
+    with httpx.Client(timeout=min(timeout, 30), follow_redirects=False, headers={"User-Agent": USER_AGENT}) as client:
+        client_box.append(client)
+        for _ in range(4):
+            with client.stream("GET", url, params=params) as r:
+                if r.is_redirect:
+                    nxt = r.url.join(r.headers.get("location", ""))
+                    if nxt.scheme != "https" or nxt.host != host:
+                        raise httpx.HTTPError(f"refused redirect to {nxt.scheme}://{nxt.host}")
+                    url, params = str(nxt), None
+                    continue
+                r.raise_for_status()
+                buf = bytearray()
+                for chunk in r.iter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise httpx.HTTPError(f"response larger than {max_bytes // 2**20} MB")
+                    if time.monotonic() > deadline:
+                        raise httpx.HTTPError(f"no complete response within {timeout} s")
+                return buf
+        raise httpx.HTTPError("too many redirects")
 
 
-def http_get(url, params=None, timeout=60, as_text=False):
+def _fetch(url, params, timeout, max_bytes=MAX_BYTES):
+    """GET with a hard size cap (after decompression), redirects only to https on the same host, and an overall
+    deadline that is enforced from outside – a server dripping header bytes cannot hold a run for hours."""
+    result, client_box = {}, []
+
+    def work():
+        try:
+            result["body"] = _fetch_once(url, params, timeout, max_bytes, client_box)
+        except Exception as e:  # noqa: BLE001 - handed to the caller
+            result["error"] = e
+
+    t = threading.Thread(target=work, daemon=True, name="fetch")
+    t.start()
+    t.join(timeout + 5)
+    if t.is_alive():
+        for c in client_box:
+            c.close()  # abandons the connection; the thread ends with the socket
+        raise httpx.HTTPError(f"no complete response within {timeout} s")
+    if "error" in result:
+        raise result["error"]
+    return result["body"]
+
+
+def http_get(url, params=None, timeout=60, as_text=False, max_bytes=MAX_BYTES):
     last = None
     for _ in range(3):
         try:
-            body, enc = _fetch(url, params, timeout)
-            return body.decode(enc, errors="replace") if as_text else json.loads(body)
+            body = _fetch(url, params, timeout, max_bytes)
+            return body.decode("utf-8", errors="replace") if as_text else json.loads(body)
         except (httpx.HTTPError, ValueError) as e:
             last = e
-    raise SourceError(f"{url}: {last}")
+    raise SourceError(f"{clean(url)}: {clean(last)}")
 
 
 def _ripe(endpoint, resource, timeout=60):
@@ -213,20 +243,31 @@ def _public_ip(v):
     return str(a) if a.is_global else None
 
 
+MAX_ENTRIES = 50000  # largest real list: NordVPN ~14,500 entries
+MAX_HOSTNAMES = 3000
+
+
 class Provider:
     id = name = note = ""
     exit_asn = None  # known ASN of the exit IPs, shown as a hint in the UI
+    host_suffix = None  # providers that list hostnames: only names in their own domain are resolved
 
     def fetch(self):
         raise NotImplementedError
 
-    def entries(self):
+    def entries(self, fresh=False):
         key = f"vpn:{self.id}"
-        hit = db.cache_get(key, PROVIDER_TTL)
+        hit = None if fresh else db.cache_get(key, PROVIDER_TTL)
         if hit is None:
-            hit = [[str(e[0]), str(e[1]), str(e[2])] for e in self.fetch() if e[0] and e[2]]
+            try:
+                rows = self.fetch()
+                hit = [[clean(e[0], 2).upper(), clean(e[1], 60), clean(e[2], 255)] for e in rows if e[0] and e[2]]
+            except (AttributeError, TypeError, KeyError, IndexError, ValueError) as e:
+                raise SourceError(f"{self.name}: unexpected server list format ({type(e).__name__})") from e
             if not hit:
                 raise SourceError(f"{self.name}: empty server list")
+            if len(hit) > MAX_ENTRIES:
+                raise SourceError(f"{self.name}: implausible server list ({len(hit)} entries)")
             db.cache_put(key, hit)
         return hit
 
@@ -240,15 +281,23 @@ class Provider:
 
     def ips(self, code):
         vals = [v for cc, _, v in self.entries() if cc.upper() == code]
-        hosts = [v for v in vals if _public_ip(v) is None and any(ch.isalpha() for ch in v)]
         ips = {_public_ip(v) for v in vals} - {None}
+        hosts = [v.lower() for v in vals if self.host_suffix and _public_ip(v) is None
+                 and re.fullmatch(r"[a-z0-9.-]{1,253}", v.lower()) and v.lower().endswith(self.host_suffix)]
+        if len(hosts) > MAX_HOSTNAMES:
+            raise SourceError(f"{self.name} {code}: implausible number of hostnames ({len(hosts)})")
         if hosts:
-            with ThreadPoolExecutor(16) as ex:
-                for res in ex.map(_resolve, hosts):
-                    ips.update(filter(None, map(_public_ip, res)))
+            ex = ThreadPoolExecutor(16)
+            try:
+                for res in ex.map(_resolve, hosts, timeout=120):
+                    ips.update(filter(None, map(_public_ip, res[:64])))
+            except TimeoutError as e:
+                raise SourceError(f"{self.name} {code}: DNS resolution took longer than 120 s") from e
+            finally:
+                ex.shutdown(wait=False, cancel_futures=True)
             if not ips:
                 raise SourceError(f"{self.name} {code}: DNS resolution failed for {len(hosts)} hostnames "
-                                  f"(e.g. {hosts[0]}) – does the container have DNS?")
+                                  f"(e.g. {clean(hosts[0], 80)}) – does the container have DNS?")
         return sorted(ips)
 
 
@@ -264,7 +313,10 @@ class NordVPN(Provider):
     note = "api.nordvpn.com – entry IPs; exit IPs are usually in AS207137 (PacketHub)."
 
     def fetch(self):
-        servers = http_get("https://api.nordvpn.com/v1/servers", {"limit": 20000}, timeout=180)
+        # only the fields needed: ~1 MB instead of ~27 MB (the full list needed ~170 MB of memory to parse)
+        fields = ("station", "ips.ip.ip", "locations.country.code", "locations.country.name")
+        servers = http_get("https://api.nordvpn.com/v1/servers",
+                           {"limit": 20000} | {f"fields[servers.{f}]": "" for f in fields}, timeout=180)
         out = []
         for s in servers:
             loc = (s.get("locations") or [{}])[0].get("country") or {}
@@ -287,6 +339,7 @@ class Mullvad(Provider):
 
 class Surfshark(Provider):
     id, name = "surfshark", "Surfshark"
+    host_suffix = ".surfshark.com"
     note = "api.surfshark.com – hostnames only, IPs resolved via DNS."
 
     def fetch(self):
@@ -339,7 +392,7 @@ class AirVPN(Provider):
 def _cc(*names):
     """ISO-2 for free-text country names such as 'USA Austin', 'Korea (South)' or 'Hong' + 'Kong'."""
     for name in names:
-        words = re.sub(r"\s*\(.*?\)", "", str(name or "")).strip().lower().split()
+        words = re.sub(r"\s*\([^)]{0,40}\)", "", str(name or "")[:80]).strip().lower().split()[:5]
         for n in range(len(words), 0, -1):
             code = COUNTRY_CODES.get(" ".join(words[:n]))
             if code:
@@ -347,13 +400,17 @@ def _cc(*names):
     return ""
 
 
-def _zip_names(url, timeout=120):
+def _zip_names(url, timeout=120, max_bytes=16 * 2**20, max_entries=20000):
     """File names inside a remote zip. Only the directory is read – nothing is decompressed."""
     try:
-        with zipfile.ZipFile(io.BytesIO(_fetch(url, None, timeout)[0])) as z:
-            return z.namelist()
-    except (httpx.HTTPError, zipfile.BadZipFile) as e:
-        raise SourceError(f"{url}: {e}") from e
+        data = bytes(_fetch(url, None, timeout, max_bytes))
+        eocd = data.rfind(b"PK\x05\x06")  # end of central directory: check the entry count before parsing
+        if eocd < 0 or int.from_bytes(data[eocd + 10:eocd + 12], "little") > max_entries:
+            raise zipfile.BadZipFile("missing directory or too many entries")
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return z.namelist()[:max_entries]
+    except (httpx.HTTPError, zipfile.BadZipFile, ValueError, LookupError, KeyError, TypeError, OSError) as e:
+        raise SourceError(f"{clean(url)}: {clean(e)}") from e
 
 
 class Windscribe(Provider):
@@ -394,6 +451,7 @@ class Privado(Provider):
 
 class IPVanish(Provider):
     id, name = "ipvanish", "IPVanish"
+    host_suffix = ".ipvanish.com"
     note = "configs.ipvanish.com OpenVPN configs (~5 MB) – hostnames, IPs resolved via DNS."
 
     def fetch(self):

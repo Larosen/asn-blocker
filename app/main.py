@@ -791,7 +791,7 @@ class Cleanup(BaseModel):
 @api.post("/crowdsec/cleanup")
 def cleanup(body: Cleanup, user: str = Depends(require_user)):
     """Remove decisions that other tools or scripts added via cscli, selected by their reason (scenario)."""
-    if body.reason in engine.REASONS.values():
+    if body.reason.strip().casefold() in {r.casefold() for r in engine.REASONS.values()}:
         raise HTTPException(422, "Decisions owned by asn-blocker are managed through runs")
     try:
         n = crowdsec.backend().delete_scenario(body.reason)
