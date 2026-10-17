@@ -282,3 +282,12 @@ def test_ntfy_request_and_test_errors(client, monkeypatch):
     url, kw = sent[-1]
     assert kw["headers"]["X-Gotify-Key"] == "tk_abc" and kw["json"]["priority"] == 6
     assert kw["json"]["extras"]["client::notification"]["click"]["url"] == "https://asnb.example/#/runs/3"
+
+
+def test_ui_files_are_revalidated(client):
+    for path in ("/", "/static/app.js", "/static/app.css"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", path
+    etag = client.get("/static/app.js").headers["etag"]
+    assert client.get("/static/app.js", headers={"If-None-Match": etag}).status_code == 304
+    assert client.get("/api/session").headers["cache-control"] == "no-store"

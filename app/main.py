@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.5.4"
+VERSION = "0.5.5"
 
 
 @asynccontextmanager
@@ -87,6 +87,9 @@ async def guard(request: Request, call_next):
     h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), interest-cohort=()"
     if request.url.path.startswith("/api/"):
         h["Cache-Control"] = "no-store"
+    elif "cache-control" not in h:
+        # UI files: the browser may keep them but must revalidate (cheap 304 via ETag), so an update shows at once
+        h["Cache-Control"] = "no-cache"
     return resp
 
 

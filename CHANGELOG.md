@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.5 (2026-10-17)
+- The web UI's files are served with `Cache-Control: no-cache`, so browsers revalidate them and show a new version
+  right after an update instead of an outdated cached interface
+
 ## 0.5.4 (2026-10-17)
 - Notifications: optional access token, sent as `Authorization: Bearer` (ntfy, webhook) or `X-Gotify-Key` (Gotify);
   write-only and discarded when the URL points to a different server
