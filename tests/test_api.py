@@ -474,3 +474,26 @@ def test_search_rejects_odd_digits(client):
         c.execute("INSERT INTO asn_names VALUES(14061,'DIGITALOCEAN','Content','US')")
     for q in ("²", "9" * 40):
         assert client.get("/api/asn/search", params={"q": q}).status_code == 200
+
+
+def test_only_the_latest_stopped_run_can_be_confirmed(client, monkeypatch):
+    from app import engine
+    setup_local(client)
+    db.put("crowdsec_mode", "lapi")
+    calls = []
+    monkeypatch.setattr(engine, "run", lambda kind, user, force=False, confirmed=None: calls.append(confirmed))
+    with db.tx() as c:
+        c.execute("INSERT INTO runs(kind,status,triggered_by,started_at,summary) VALUES"
+                  "('apply','blocked','x',1,'{\"ban\": 5}'),('apply','blocked','x',2,'{\"ban\": 7}'),"
+                  "('plan','blocked','x',3,NULL)")
+    assert client.post("/api/runs", headers=H, json={"kind": "apply", "confirm": 1}).status_code == 409   # superseded
+    assert client.post("/api/runs", headers=H, json={"kind": "plan", "confirm": 2}).status_code == 409
+    assert client.post("/api/runs", headers=H, json={"kind": "apply", "force": True}).status_code == 200  # force is ignored
+    r = client.post("/api/runs", headers=H, json={"kind": "apply", "confirm": 2})
+    assert r.status_code == 200
+    import time
+    for _ in range(50):
+        if len(calls) == 2:
+            break
+        time.sleep(0.05)
+    assert calls == [None, (2, {"ban": 7})]

@@ -35,7 +35,14 @@ class Busy(RuntimeError):
 
 
 class Blocked(RuntimeError):
-    """Sanity check tripped - needs confirmation."""
+    """Sanity check tripped - needs confirmation. Carries every reason, not just the first."""
+
+    def __init__(self, reasons):
+        self.reasons = [reasons] if isinstance(reasons, str) else list(reasons)
+        super().__init__("; ".join(self.reasons))
+
+
+CONFIRM_TOLERANCE = 5  # % a confirmed run's result may differ from the stopped run the user reviewed
 
 
 # --- Desired state -------------------------------------------------------------------------
@@ -198,34 +205,46 @@ def _space(cidrs):
     return v4, v6
 
 
-def _sanity(desired, force):
-    prev = sum(_counts().values())
-    new = sum(len(v) for v in desired.values())
+def _sanity(desired, force=False, confirmed=None):
+    """force: skip all checks. confirmed: summary of the stopped run the user reviewed and accepted. A result within
+    CONFIRM_TOLERANCE of it is applied; one that changed since the review goes through the normal checks again, so a
+    confirmation never waves through data the user has not seen."""
     if force:
         return
+    new = sum(len(v) for v in desired.values())
+    changed = []
+    if confirmed is not None:
+        changed = [f"{t} ranges changed from {confirmed.get(t, 0):,} to {len(v):,} since the run you confirmed"
+                   for t, v in desired.items()
+                   if abs(len(v) - confirmed.get(t, 0)) > max(confirmed.get(t, 0), 1) * CONFIRM_TOLERANCE / 100]
+        if not changed:
+            return
+    prev = sum(_counts().values())
+    reasons = []
     if new > MAX_RANGES:
-        raise Blocked(f"{new:,} ranges would be pushed, more than the limit of {MAX_RANGES:,}")
+        reasons.append(f"{new:,} ranges would be pushed, more than the limit of {MAX_RANGES:,}")
     v4, v6 = _space([c for v in desired.values() for c in v])
     if v4 > MAX_V4_ADDRESSES:
-        raise Blocked(f"{v4:,} IPv4 addresses would be blocked ({v4 / 2**32:.1%} of IPv4), "
-                      f"more than the limit of {MAX_V4_ADDRESSES:,}")
+        reasons.append(f"{v4:,} IPv4 addresses would be blocked ({v4 / 2**32:.1%} of IPv4), "
+                       f"more than the limit of {MAX_V4_ADDRESSES:,}")
     if v6 > MAX_V6_48S:
-        raise Blocked(f"{v6:,} IPv6 /48 networks would be blocked, more than the limit of {MAX_V6_48S:,}")
+        reasons.append(f"{v6:,} IPv6 /48 networks would be blocked, more than the limit of {MAX_V6_48S:,}")
     if new == 0 and (db.q1("SELECT 1 x FROM asn_rules") or db.get("spamhaus_asndrop")):
-        raise Blocked("Rules exist, but 0 ranges computed")
-    if prev == 0:
-        return
-    pv4, pv6 = _space([r["value"] for r in db.q("SELECT value FROM applied")])
-    limit = db.get("sanity_percent")
-    for label, before, after in (("IPv4 address space", pv4, v4), ("IPv6 address space", pv6, v6)):
-        if before and abs(after - before) / before * 100 > limit:
-            raise Blocked(f"Blocked {label} changes by {abs(after - before) / before * 100:.0f} % "
-                          f"({before:,} -> {after:,}), limit {limit} %")
-        if not before and after > 2**24:  # IPv6 newly enabled: more than a /24 worth of /48s needs confirmation
-            raise Blocked(f"Blocked {label} grows from 0 to {after:,} units, please confirm")
-    pct = abs(new - prev) / prev * 100
-    if pct > db.get("sanity_percent"):
-        raise Blocked(f"Range count changes by {pct:.0f} % ({prev} -> {new}), limit {db.get('sanity_percent')} %")
+        reasons.append("Rules exist, but 0 ranges computed")
+    if prev:
+        pv4, pv6 = _space([r["value"] for r in db.q("SELECT value FROM applied")])
+        limit = db.get("sanity_percent")
+        for label, before, after in (("IPv4 address space", pv4, v4), ("IPv6 address space", pv6, v6)):
+            if before and abs(after - before) / before * 100 > limit:
+                reasons.append(f"Blocked {label} changes by {abs(after - before) / before * 100:.0f} % "
+                               f"({before:,} -> {after:,}), limit {limit} %")
+            if not before and after > 2**24:  # IPv6 newly enabled: more than a /24 worth of /48s needs confirmation
+                reasons.append(f"Blocked {label} grows from 0 to {after:,} /48 networks (IPv6 newly enabled)")
+        pct = abs(new - prev) / prev * 100
+        if pct > limit:
+            reasons.append(f"Range count changes by {pct:.0f} % ({prev:,} -> {new:,}), limit {limit} %")
+    if reasons:  # a result that changed since the review only needs a new confirmation if it trips a check itself
+        raise Blocked(changed + reasons)
 
 
 def status_of(ip, ranges):
@@ -236,8 +255,9 @@ def status_of(ip, ranges):
     return None
 
 
-def run(kind, user, force=False):
-    """kind: 'plan' (compute only) or 'apply'. Returns the run ID."""
+def run(kind, user, force=False, confirmed=None):
+    """kind: 'plan' (compute only) or 'apply'. confirmed: (run id, summary) of the stopped run the user accepted.
+    Returns the run ID."""
     if not _lock.acquire(blocking=False):
         raise Busy("A run is already in progress")
     try:
@@ -291,7 +311,9 @@ def run(kind, user, force=False):
             summary["watch_hits"] = [ip for ip, s in watch.items() if s]
 
             if kind == "apply":
-                _sanity(desired, force)
+                _sanity(desired, force, confirmed[1] if confirmed else None)
+                if confirmed:
+                    log(f"Confirmed by {user} after review of run #{confirmed[0]}")
                 log("Pushing changes to CrowdSec")
                 for t, reason in REASONS.items():  # all additions first: no gap when a range moves ban <-> captcha
                     if plan[t][0]:
@@ -324,7 +346,10 @@ def run(kind, user, force=False):
             log("Done")
         except Blocked as e:
             status = "blocked"
-            log(f"STOPPED: {e}. CrowdSec unchanged – confirm in the UI to apply anyway.")
+            summary["stopped"] = e.reasons
+            for r in e.reasons:
+                log(f"STOPPED: {r}")
+            log("CrowdSec unchanged – confirm in the UI to apply anyway.")
             notify.send("asn-blocker: run stopped", f"{e}. CrowdSec is unchanged – review and confirm the run.",
                         "warning", run_id)
         except (sources.SourceError, crowdsec.CrowdSecError) as e:

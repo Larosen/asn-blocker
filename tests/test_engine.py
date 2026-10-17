@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -111,6 +112,32 @@ def test_sanity_blocks_large_change(env):
     assert env.decisions == before
     engine.run("apply", "test", force=True)
     assert last_run()["status"] == "ok"
+    assert applied("captcha") == set()
+
+
+def test_stopped_run_records_every_reason(env):
+    engine.run("apply", "test")
+    with db.tx() as c:
+        c.execute("DELETE FROM asn_rules WHERE asn=2")
+    engine.run("apply", "test")
+    reasons = json.loads(last_run()["summary"])["stopped"]
+    assert len(reasons) >= 2 and any("Range count" in r for r in reasons), reasons
+
+
+def test_confirmed_run_applies_only_the_reviewed_result(env):
+    engine.run("apply", "test")
+    with db.tx() as c:
+        c.execute("DELETE FROM asn_rules WHERE asn=2")
+    engine.run("apply", "test")
+    stopped = last_run()
+    before = list(env.decisions)
+    reviewed = json.loads(stopped["summary"])
+    # data changed after the review: the confirmation does not cover it
+    engine.run("apply", "test", confirmed=(stopped["id"], reviewed | {"ban": reviewed["ban"] + 50}))
+    assert last_run()["status"] == "blocked" and "since the run you confirmed" in last_run()["log"]
+    assert env.decisions == before
+    engine.run("apply", "test", confirmed=(stopped["id"], reviewed))
+    assert last_run()["status"] == "ok" and f"review of run #{stopped['id']}" in last_run()["log"]
     assert applied("captcha") == set()
 
 

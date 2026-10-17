@@ -209,8 +209,10 @@ function renderBanners() {
   if (ov.untrusted_proxy) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Requests arrive through proxy {ip}, which is not a trusted proxy. Sign-in throttling then applies to everyone behind it together.", { ip: `<code>${esc(ov.untrusted_proxy)}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
   if (ov.broad_proxies?.length) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Trusted proxies {nets} cover more than one address. Every host in them can claim any client IP or username – trust only the proxy's own IP.", { nets: `<code>${esc(ov.broad_proxies.join(", "))}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
   if (ov.last_apply?.status === "failed") b.push(`<div class="banner danger"><span class="dot failed"></span><span>${t("Last run failed ({when}).", { when: ago(ov.last_apply.started_at) })}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Details")}</a></div>`);
-  if (ov.last_apply?.status === "blocked") b.push(`<div class="banner warn"><span class="dot blocked"></span><span>${t("The last run was stopped by the sanity check.")}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Review")}</a></div>`);
+  if (ov.last_apply?.status === "blocked") b.push(`<div class="banner warn"><span class="dot blocked"></span><span>${t("The last run was stopped by the sanity check – CrowdSec is unchanged.")} ${esc(stopReasons(ov.last_apply).join(" · "))}</span>
+    <a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Review changes")}</a><button class="btn sm danger" data-confirm-run>${t("Apply anyway")}</button></div>`);
   $("#banners").innerHTML = b.join("");
+  $("[data-confirm-run]")?.addEventListener("click", () => reviewStopped(ov.last_apply));
   $("[data-exempt-me]")?.addEventListener("click", guard(async (e) => {
     await api("/exemptions", { method: "POST", body: { kind: "cidr", value: e.target.dataset.exemptMe, note: t("own IP") } });
     toast(t("Your IP was saved as an exemption. Apply to make it effective."));
@@ -229,8 +231,11 @@ function renderApplyBar() {
   if (!ov.pending) { el.innerHTML = ""; return; }
   el.innerHTML = `<div class="applybar"><span class="dot warn"></span><span>${t("Rules changed – not active in CrowdSec yet.")}</span>
     <span class="muted small mono" id="preview">${t("Computing preview …")}</span><span class="spacer"></span>
-    <button class="btn" data-run="plan">${t("Preview")}</button><button class="btn primary" data-run="apply" ${ov.crowdsec_mode ? "" : "disabled"}>${t("Apply")}</button></div>`;
+    <button class="btn" data-run="plan">${t("Preview")}</button>${ov.last_apply?.status === "blocked"
+      ? `<button class="btn danger" data-confirm-run>${t("Apply anyway")}</button>`
+      : `<button class="btn primary" data-run="apply" ${ov.crowdsec_mode ? "" : "disabled"}>${t("Apply")}</button>`}</div>`;
   $$("[data-run]", el).forEach((b) => (b.onclick = () => startRun(b.dataset.run)));
+  $("[data-confirm-run]", el)?.addEventListener("click", () => reviewStopped(ov.last_apply));
   const my = ++previewSeq;
   api("/preview").then((p) => {
     if (my !== previewSeq || !$("#preview")) return;
@@ -240,14 +245,50 @@ function renderApplyBar() {
   }).catch(() => { if ($("#preview")) $("#preview").textContent = ""; });
 }
 
-const startRun = guard(async (kind, force = false) => {
-  if (kind === "apply" && !(await confirmDlg(t("Apply rules"), force
-    ? t("The sanity check is skipped. The computed ranges are pushed despite the large deviation.")
-    : t("Ranges are recomputed and synced with CrowdSec. Existing decisions stay active until it finishes."), t("Apply")))) return;
-  await api("/runs", { method: "POST", body: { kind, force } });
+const startRun = guard(async (kind) => {
+  if (kind === "apply" && !(await confirmDlg(t("Apply rules"),
+    t("Ranges are recomputed and synced with CrowdSec. Existing decisions stay active until it finishes."), t("Apply")))) return;
+  await launchRun(kind);
+});
+
+// confirm: ID of the stopped run the user accepts – the server only applies a result matching that run
+async function launchRun(kind, confirm = null) {
+  const prev = ov?.last_apply?.id;
+  await api("/runs", { method: "POST", body: confirm ? { kind, confirm } : { kind } });
   toast(kind === "plan" ? t("Computing preview …") : t("Run started"));
   if (location.hash === "#/runs") route(); else location.hash = "#/runs";
   setTimeout(refreshOverview, 300);
+  if (kind !== "apply") return;
+  const r = await awaitRun(prev);
+  if (r?.status === "blocked") reviewStopped(r);
+}
+
+// Waits until the apply run started after `prev` has finished
+async function awaitRun(prev) {
+  for (let i = 0; i < 600; i++) {
+    await new Promise((res) => setTimeout(res, 1500));
+    const o = await api("/overview").catch(() => null);
+    if (o && !o.running && o.last_apply && o.last_apply.id !== prev) return o.last_apply;
+  }
+  return null;
+}
+
+const stopReasons = (r) => r?.summary?.stopped?.length ? r.summary.stopped : [t("The change exceeds the sanity limits.")];
+
+// A stopped run: show why and let the user apply exactly this result in one step
+const reviewStopped = guard(async (r) => {
+  const s = r.summary || {};
+  const add = (s.ban_added || 0) + (s.captcha_added || 0), rm = (s.ban_removed || 0) + (s.captcha_removed || 0);
+  const v = await dialog({
+    title: t("Run #{id} stopped by the sanity check", { id: r.id }),
+    body: `<p>${t("CrowdSec is unchanged. The run would change much more than usual:")}</p>
+      <ul>${stopReasons(r).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+      <p class="mono small">${act("ban")} ${fmtNum(s.ban)} · ${act("captcha")} ${fmtNum(s.captcha)} · <span class="diff-add">+${fmtNum(add)}</span> <span class="diff-del">−${fmtNum(rm)}</span></p>
+      <p class="small muted">${t("Expected – for example because you added or removed ASNs or enabled IPv6? Then apply it anyway. If not, review the changes first: a data source may have returned wrong data.")}</p>`,
+    actions: [["cancel", t("Not now")], ["review", t("Review changes")], ["ok", t("Apply anyway"), "danger"]],
+  });
+  if (v === "review") location.hash = `#/runs/${r.id}`;
+  if (v === "ok") await launchRun("apply", r.id);
 });
 
 function route() {
@@ -630,11 +671,12 @@ async function runDetail(id) {
   const changes = r.changes.length ? `<div class="box table-wrap"><table><tbody>${r.changes.slice(0, 200).map((c) => `<tr><td class="mono ${c.op === "+" ? "diff-add" : "diff-del"}">${c.op}</td><td>${statusTag(c.type)}</td><td class="mono">${esc(c.value)}</td></tr>`).join("")}</tbody></table></div>
     ${r.changes.length >= 200 ? `<p class="small muted">${t("First 200 of {n} changes.", { n: r.changes.length >= 500 ? "500+" : r.changes.length })}</p>` : ""}` : `<p class="muted small">${t("No range changes.")}</p>`;
   $("#detail").innerHTML = `<div class="section"><div class="section-head"><h2>${t("Run")} #${r.id} · ${kindName(r.kind)} · ${runStatus(r.status)}</h2>
-      ${r.status === "blocked" ? `<button class="btn danger" id="force">${t("Apply anyway")}</button>` : ""}
+      ${r.status === "blocked" && r.id === ov?.last_apply?.id ? `<button class="btn danger" id="force">${t("Apply anyway")}</button>` : ""}
       ${r.kind === "plan" && r.status === "ok" ? `<button class="btn primary" id="apply-now">${t("Apply this state")}</button>` : ""}</div>
+    ${r.status === "blocked" ? `<div class="note warn">${t("Stopped by the sanity check – CrowdSec is unchanged:")}<ul>${stopReasons(r).map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
     ${s.watch_hits?.length ? `<div class="note danger">${t("Watched IPs affected:")} <code>${s.watch_hits.map(esc).join(", ")}</code></div>` : ""}
     <div class="grid2"><div><h3>${t("Changes")}</h3>${changes}</div><div><h3>${t("Log")}</h3><pre class="log" tabindex="0">${esc(r.log)}</pre></div></div></div>`;
-  $("#force")?.addEventListener("click", () => startRun("apply", true));
+  $("#force")?.addEventListener("click", () => reviewStopped(r));
   $("#apply-now")?.addEventListener("click", () => startRun("apply"));
   return r;
 }
