@@ -11,6 +11,8 @@ def fresh_db(monkeypatch, tmp_path):
     from app import auth, db
 
     auth._failed.clear()
+    from app import notify
+    notify._tested.clear()
 
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_FILE", tmp_path / "t.db")

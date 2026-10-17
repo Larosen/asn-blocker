@@ -13,7 +13,7 @@ from . import db
 
 BATCH = 500
 MANUAL_ORIGINS = ("cscli", "cscli-import")  # decisions added by hand or by scripts via cscli
-_DUR = re.compile(r"(-?[\d.]{1,20})(h|ms|m|s|us|µs|ns)")
+_DUR = re.compile(r"(-?[0-9]{1,12}(?:\.[0-9]{1,9})?)(h|ms|m|s|us|µs|ns)")
 _UNIT = {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
 
 
@@ -36,17 +36,22 @@ def _alert(reason, typ, values, duration_s):
         "scenario": reason, "scenario_hash": "", "scenario_version": "", "message": f"{reason}: {len(values)} ranges",
         "events": [], "events_count": len(values), "capacity": 0, "leakspeed": "0", "simulated": False,
         "start_at": now, "stop_at": now, "created_at": now,
-        "source": {"scope": "asn-blocker", "value": reason},
+        "source": {"scope": OWN_SOURCE, "value": reason},
         "decisions": [{"duration": f"{int(duration_s)}s", "origin": "cscli-import", "scenario": reason,
                        "scope": "Range", "type": typ, "value": v} for v in values],
     }
 
 
-def _decisions_from_alerts(alerts, reason):
+OWN_SOURCE = "asn-blocker"  # alerts created by this app carry source.scope = "asn-blocker"
+
+
+def _decisions_from_alerts(alerts, reason, own=None):
+    """Active decisions of this scenario. own(alert, decision) narrows them to the ones this app created, so a
+    run never deletes a decision someone else added with the same reason."""
     out, now = [], time.time()
     for a in alerts or []:
         for d in a.get("decisions") or []:
-            if d.get("scenario") != reason:
+            if d.get("scenario") != reason or (own and not own(a, d)):
                 continue
             remaining = go_duration(d.get("duration", ""))
             if remaining > 0:
@@ -77,7 +82,10 @@ class Lapi:
             raise CrowdSecError(f"LAPI not reachable ({self.base}): {type(e).__name__}") from e
         if r.status_code != 200:  # no response body: the URL is user-configurable, don't reflect what it returns
             raise CrowdSecError(f"LAPI login failed (HTTP {r.status_code}) – check machine ID and password")
-        self._token, self._exp = r.json()["token"], time.time() + 3000
+        try:
+            self._token, self._exp = str(r.json()["token"]), time.time() + 3000
+        except (ValueError, KeyError, TypeError) as e:
+            raise CrowdSecError("LAPI login answered without a token – is this really a CrowdSec LAPI?") from e
 
     def _req(self, method, path, **kw):
         self._auth()
@@ -91,7 +99,10 @@ class Lapi:
             except (ValueError, AttributeError):
                 detail = ""
             raise CrowdSecError(f"LAPI {method} {path} -> HTTP {r.status_code}" + (f": {detail}" if detail else ""))
-        return r.json() if r.content else None
+        try:
+            return r.json() if r.content else None
+        except ValueError as e:
+            raise CrowdSecError(f"LAPI {method} {path}: invalid JSON response") from e
 
     def test(self):
         self._token = None
@@ -101,7 +112,7 @@ class Lapi:
 
     def list(self, reason):
         alerts = self._req("GET", "/alerts", params={"scenario": reason, "has_active_decision": "true", "limit": 0})
-        return _decisions_from_alerts(alerts, reason)
+        return _decisions_from_alerts(alerts, reason, own=lambda a, d: (a.get("source") or {}).get("scope") == OWN_SOURCE)
 
     def add(self, values, typ, reason, duration_s):
         for i in range(0, len(values), BATCH):
@@ -143,7 +154,7 @@ class DockerCli:
 
     def list(self, reason):
         out = self._exec("cscli", "decisions", "list", "--scenario", reason, "-l", "0", "-o", "json")
-        return _decisions_from_alerts(json.loads(out or "null"), reason)
+        return _decisions_from_alerts(json.loads(out or "null"), reason, own=lambda a, d: d.get("origin") == "cscli-import")
 
     def add(self, values, typ, reason, duration_s):
         name = f"asn-blocker-{secrets.token_hex(8)}.txt"
@@ -155,10 +166,12 @@ class DockerCli:
             tar.addfile(info, io.BytesIO(data))
         if not self.c.put_archive("/tmp", buf.getvalue()):
             raise CrowdSecError("Copying into the CrowdSec container failed")
-        self._exec("cscli", "decisions", "import", "-i", f"/tmp/{name}", "--format", "values",
-                   "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
-                   "--batch", str(BATCH))
-        self.c.exec_run(["rm", "-f", f"/tmp/{name}"])
+        try:
+            self._exec("cscli", "decisions", "import", "-i", f"/tmp/{name}", "--format", "values",
+                       "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
+                       "--batch", str(BATCH))
+        finally:
+            self.c.exec_run(["rm", "-f", f"/tmp/{name}"])
 
     def delete_ids(self, ids):
         for i in ids:

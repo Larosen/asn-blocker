@@ -21,8 +21,11 @@ NON_PUBLIC = [ipaddress.ip_network(n) for n in (
     "::/8", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8")]
 # Shorter prefixes are never announced by a single real ASN
 MIN_PREFIXLEN = {4: 8, 6: 16}
-# Hard cap even on the first run: about 12 % of the IPv4 space
+# Hard caps even on the first run: about 12 % of the IPv4 space, 2^36 IPv6 /48s (as much as a /12, of 2000::/3),
+# and a number of ranges far above any realistic configuration (16k for 40 large hosting ASNs)
 MAX_V4_ADDRESSES = 2**29
+MAX_V6_48S = 2**36
+MAX_RANGES = 150000
 _lock = threading.Lock()
 log_ = logging.getLogger("asn_blocker.engine")
 
@@ -56,7 +59,7 @@ def build(log, fresh=True):
         if not prov:
             raise sources.SourceError(f"Unknown VPN provider {pid}")
         if fresh:
-            db.cache_put(f"vpn:{pid}", [list(e) for e in prov.fetch() if e[0] and e[2]])
+            prov.entries(fresh=True)  # same validation and limits as every other read
         widen = modes.get(pid) == "net"
         for cc in countries:
             ips = prov.ips(cc)
@@ -72,7 +75,7 @@ def build(log, fresh=True):
     for asn, p in sources.prefixes_many(ex_asns, use_cache=not fresh).items():
         if not p:
             raise sources.SourceError(f"Exempt AS{asn}: no prefixes")
-        exempt += [(n, f"Exempt AS{asn}") for n in netset.parse(p)]
+        exempt += [(n, f"Exempt AS{asn}") for n in _plausible(netset.parse(p), f"exempt AS{asn}", log)]
         log(f"  Exempt AS{asn}: {len(p)} prefixes")
     for r in db.q("SELECT value, note FROM exemptions WHERE kind='cidr'"):
         exempt += [(n, "Manual" + (f": {r['note']}" if r["note"] else "")) for n in netset.parse([r["value"]])]
@@ -84,7 +87,7 @@ def build(log, fresh=True):
     for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
         if not p:  # fail closed like exempt ASNs: better no run than a run without the protection
             raise sources.SourceError(f"Self-protection AS{asn}: no prefixes")
-        exempt += [(n, f"Self-protection AS{asn}") for n in netset.parse(p)]
+        exempt += [(n, f"Self-protection AS{asn}") for n in _plausible(netset.parse(p), f"protected AS{asn}", log)]
     log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs")
 
     log("Collecting ASN ranges")
@@ -105,10 +108,7 @@ def build(log, fresh=True):
     spamhaus = [0, 0]  # ASNs, prefixes – summarized instead of hundreds of individual lines
     for asn, r in sorted(asn_rules.items()):
         nets = [n for n in netset.parse(prefixes[asn]) if ipv6 or n.version == 4]
-        huge = [n for n in nets if n.prefixlen < MIN_PREFIXLEN[n.version]]
-        if huge:  # no real ASN announces these – a broken or poisoned source
-            log(f"  WARNING AS{asn}: ignored implausibly large prefixes {', '.join(map(str, huge[:5]))}")
-            nets = [n for n in nets if n.prefixlen >= MIN_PREFIXLEN[n.version]]
+        nets = _plausible(nets, f"AS{asn}", log)
         raw[r["action"]] += nets
         if r.get("spamhaus"):
             spamhaus[0] += 1
@@ -132,14 +132,29 @@ def build(log, fresh=True):
         [(str(n), label) for n, label in exempt]
 
 
+def _plausible(nets, what, log):
+    """No real ASN announces prefixes shorter than MIN_PREFIXLEN – from a broken or poisoned source they would block
+    (or, as exemption, unblock) huge parts of the internet."""
+    huge = [n for n in nets if n.prefixlen < MIN_PREFIXLEN[n.version]]
+    if huge:
+        log(f"  WARNING {what}: ignored implausibly large prefixes {', '.join(map(str, huge[:5]))}")
+    return [n for n in nets if n.prefixlen >= MIN_PREFIXLEN[n.version]]
+
+
+def _canonical(ip):
+    """IPv4-mapped IPv6 (::ffff:a.b.c.d) protects the IPv4 address it stands for."""
+    a = ipaddress.ip_address(str(ip).split("/")[0])
+    return str(ipaddress.ip_network(a.ipv4_mapped if a.version == 6 and a.ipv4_mapped else a))
+
+
 def guard_ips():
     """All IPs that must never be blocked: protected IPs + active SSH sessions. {ip_cidr: label}"""
     out = {}
     for r in db.q("SELECT value, note FROM protected WHERE kind='ip'"):
-        out[str(ipaddress.ip_network(r["value"]))] = "Self-protection" + (f": {r['note']}" if r["note"] else "")
+        out[_canonical(r["value"])] = "Self-protection" + (f": {r['note']}" if r["note"] else "")
     sessions, _ = selfprotect.ssh_sessions()
     for s in sessions:
-        out.setdefault(str(ipaddress.ip_network(s["ip"])), f"SSH session {s['user']}@{s['line']}")
+        out.setdefault(_canonical(s["ip"]), f"SSH session {s['user']}@{s['line']}")
     return out
 
 
@@ -172,8 +187,15 @@ def _counts():
     return {t: db.q1("SELECT count(*) n FROM applied WHERE type=?", (t,))["n"] for t in REASONS}
 
 
-def _v4_addresses(cidrs):
-    return sum(n.num_addresses for n in netset.parse(cidrs) if n.version == 4)
+def _space(cidrs):
+    """Blocked address space: IPv4 addresses and IPv6 /48 networks."""
+    v4 = v6 = 0
+    for n in netset.parse(cidrs):
+        if n.version == 4:
+            v4 += n.num_addresses
+        else:
+            v6 += max(1, n.num_addresses >> 80)
+    return v4, v6
 
 
 def _sanity(desired, force):
@@ -181,18 +203,26 @@ def _sanity(desired, force):
     new = sum(len(v) for v in desired.values())
     if force:
         return
-    addr = _v4_addresses([c for v in desired.values() for c in v])
-    if addr > MAX_V4_ADDRESSES:
-        raise Blocked(f"{addr:,} IPv4 addresses would be blocked ({addr / 2**32:.1%} of IPv4), "
+    if new > MAX_RANGES:
+        raise Blocked(f"{new:,} ranges would be pushed, more than the limit of {MAX_RANGES:,}")
+    v4, v6 = _space([c for v in desired.values() for c in v])
+    if v4 > MAX_V4_ADDRESSES:
+        raise Blocked(f"{v4:,} IPv4 addresses would be blocked ({v4 / 2**32:.1%} of IPv4), "
                       f"more than the limit of {MAX_V4_ADDRESSES:,}")
-    if prev == 0:
-        return
-    prev_addr = _v4_addresses([r["value"] for r in db.q("SELECT value FROM applied")])
-    if prev_addr and abs(addr - prev_addr) / prev_addr * 100 > db.get("sanity_percent"):
-        raise Blocked(f"Blocked IPv4 address space changes by {abs(addr - prev_addr) / prev_addr * 100:.0f} % "
-                      f"({prev_addr:,} -> {addr:,}), limit {db.get('sanity_percent')} %")
+    if v6 > MAX_V6_48S:
+        raise Blocked(f"{v6:,} IPv6 /48 networks would be blocked, more than the limit of {MAX_V6_48S:,}")
     if new == 0 and (db.q1("SELECT 1 x FROM asn_rules") or db.get("spamhaus_asndrop")):
         raise Blocked("Rules exist, but 0 ranges computed")
+    if prev == 0:
+        return
+    pv4, pv6 = _space([r["value"] for r in db.q("SELECT value FROM applied")])
+    limit = db.get("sanity_percent")
+    for label, before, after in (("IPv4 address space", pv4, v4), ("IPv6 address space", pv6, v6)):
+        if before and abs(after - before) / before * 100 > limit:
+            raise Blocked(f"Blocked {label} changes by {abs(after - before) / before * 100:.0f} % "
+                          f"({before:,} -> {after:,}), limit {limit} %")
+        if not before and after > 2**24:  # IPv6 newly enabled: more than a /24 worth of /48s needs confirmation
+            raise Blocked(f"Blocked {label} grows from 0 to {after:,} units, please confirm")
     pct = abs(new - prev) / prev * 100
     if pct > db.get("sanity_percent"):
         raise Blocked(f"Range count changes by {pct:.0f} % ({prev} -> {new}), limit {db.get('sanity_percent')} %")
@@ -217,6 +247,7 @@ def run(kind, user, force=False):
         lines = []
 
         def log(msg):
+            msg = sources.clean(msg, 600)  # external text must not forge lines in the run log or stdout
             line = f"{time.strftime('%H:%M:%S')} {msg}"
             log_.info(msg, extra={"run_id": run_id})
             lines.append(line)
@@ -262,12 +293,13 @@ def run(kind, user, force=False):
             if kind == "apply":
                 _sanity(desired, force)
                 log("Pushing changes to CrowdSec")
+                for t, reason in REASONS.items():  # all additions first: no gap when a range moves ban <-> captcha
+                    if plan[t][0]:
+                        backend.add(plan[t][0], t, reason, db.get("decision_hours") * 3600)
+                for t in REASONS:
+                    if plan[t][1]:
+                        backend.delete_ids(plan[t][1])
                 for t, reason in REASONS.items():
-                    add, delete = plan[t]
-                    if add:
-                        backend.add(add, t, reason, db.get("decision_hours") * 3600)
-                    if delete:
-                        backend.delete_ids(delete)
                     active = {d["value"] for d in backend.list(reason)}
                     missing = set(desired[t]) - active
                     extra = active - set(desired[t])
@@ -368,7 +400,9 @@ def check_ip(ip):
             out["prefix"] = info["prefix"]
             for asn in info["asns"]:
                 r = db.q1("SELECT action FROM asn_rules WHERE asn=?", (asn,))
-                out["asns"].append({"asn": asn, "name": sources.asn_name(asn), "rule": r["action"] if r else None})
+                n = db.q1("SELECT class FROM asn_names WHERE asn=?", (asn,))
+                out["asns"].append({"asn": asn, "name": sources.asn_name(asn), "rule": r["action"] if r else None,
+                                    "class": n["class"] if n else ""})
         except sources.SourceError as e:
             out["lookup_error"] = str(e)
     return out

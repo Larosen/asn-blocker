@@ -36,7 +36,10 @@ async function api(path, { method = "GET", body } = {}) {
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
   if (!res.ok) {
     const d = data?.detail;
-    throw new Error(Array.isArray(d) ? d.map((x) => t(x.msg?.replace(/^Value error, /, "") ?? "")).join("; ") : t(d || res.statusText));
+    const err = new Error(Array.isArray(d) ? d.map((x) => t(x.msg?.replace(/^Value error, /, "") ?? "")).join("; ")
+      : d && typeof d === "object" ? d.message : t(d || res.statusText));
+    err.status = res.status; err.detail = d;
+    throw err;
   }
   return data;
 }
@@ -61,6 +64,8 @@ function dialog({ title, body, actions = [["cancel", t("Cancel")], ["ok", "OK", 
     dlg.onclose = () => resolve(dlg.returnValue === "cancel" ? "" : dlg.returnValue);
     dlg.returnValue = "";
     dlg.showModal();
+    // Never start on an action button: a stray Enter must not block a network or change a setting
+    $('.df button[value="cancel"]', dlg)?.focus();
     onOpen?.(dlg);
   });
 }
@@ -202,7 +207,7 @@ function renderBanners() {
   if (ov.me?.status) b.push(`<div class="banner danger" role="alert"><span class="dot ban"></span><span>${t("Your IP {ip} is currently affected by {action}. You risk locking yourself out.", { ip: `<code>${esc(ov.me.ip)}</code>`, action: `<b>${act(ov.me.status)}</b>` })}</span>
     <button class="btn sm" data-exempt-me="${esc(ov.me.ip)}">${t("Add as exemption")}</button></div>`);
   if (ov.untrusted_proxy) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Requests arrive through proxy {ip}, which is not a trusted proxy. Sign-in throttling then applies to everyone behind it together.", { ip: `<code>${esc(ov.untrusted_proxy)}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
-  if (ov.broad_proxies?.length) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Trusted proxies {nets} cover more than one address. Every host in them can send any username header – trust only the proxy's own IP.", { nets: `<code>${esc(ov.broad_proxies.join(", "))}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
+  if (ov.broad_proxies?.length) b.push(`<div class="banner warn"><span class="dot warn"></span><span>${t("Trusted proxies {nets} cover more than one address. Every host in them can claim any client IP or username – trust only the proxy's own IP.", { nets: `<code>${esc(ov.broad_proxies.join(", "))}</code>` })}</span><a class="btn sm" href="#/settings">${t("Settings")}</a></div>`);
   if (ov.last_apply?.status === "failed") b.push(`<div class="banner danger"><span class="dot failed"></span><span>${t("Last run failed ({when}).", { when: ago(ov.last_apply.started_at) })}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Details")}</a></div>`);
   if (ov.last_apply?.status === "blocked") b.push(`<div class="banner warn"><span class="dot blocked"></span><span>${t("The last run was stopped by the sanity check.")}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Review")}</a></div>`);
   $("#banners").innerHTML = b.join("");
@@ -262,7 +267,8 @@ function route() {
 const checkIp = guard(async (ip) => {
   const r = await api("/check/" + encodeURIComponent(ip));
   const st = r.status ? `<span class="tag ${r.status}">${act(r.status)}</span>` : r.exempt.length ? `<span class="tag ok">${t("Exempt")}</span>` : `<span class="tag">${t("not affected")}</span>`;
-  const asns = r.asns.map((a) => `<tr><td class="mono">AS${a.asn}</td><td>${esc(a.name)}</td><td>${a.rule ? `<span class="tag ${a.rule}">${act(a.rule)}</span>` : `<span class="muted">${t("no rule")}</span>`}</td></tr>`).join("");
+  const asns = r.asns.map((a) => `<tr><td class="mono">AS${a.asn}</td><td>${esc(a.name)} <span class="hide-sm">${classTag(a.class)}</span></td><td class="actions">${a.rule ? `<span class="tag ${a.rule}">${act(a.rule)}</span>`
+    : `<button class="btn sm" value="ban:${a.asn}">${t("Block")}</button> <button class="btn sm" value="captcha:${a.asn}">${t("Captcha")}</button>`}</td></tr>`).join("");
   const body = `<p>${st}</p>
     ${asns ? `<h3>${t("Origin")}</h3><table><tbody>${asns}</tbody></table>${r.prefix ? `<p class="small muted">${t("Prefix")} ${esc(r.prefix)}</p>` : ""}` : r.global ? "" : `<p class="muted">${t("Not a public address.")}</p>`}
     ${Object.entries(r.ranges).map(([k, v]) => `<p>${t("Covered by {action}:", { action: `<b>${act(k)}</b>` })} <code>${v.map(esc).join(", ")}</code></p>`).join("")}
@@ -272,6 +278,11 @@ const checkIp = guard(async (ip) => {
   const v = await dialog({ title: r.ip, body, actions: [["watch", t("Watch this IP")], ["exempt", t("As exemption")], ["cancel", t("Close"), "primary"]] });
   if (v === "watch") { await api("/watch", { method: "POST", body: { ip: r.ip } }); toast(t("Watched IP added")); refreshOverview(); }
   if (v === "exempt") { await api("/exemptions", { method: "POST", body: { kind: "cidr", value: r.ip } }); toast(t("Exemption saved")); refreshOverview(); }
+  const m = /^(ban|captcha):(\d+)$/.exec(v || "");
+  if (m) {
+    const a = r.asns.find((x) => x.asn === +m[2]);
+    if (await addAsnRule({ ...a, via: { ip: r.ip } }, m[1])) { toast(t("AS{asn} added – takes effect with the next run", { asn: a.asn })); refreshOverview(); }
+  }
 });
 
 // --- Overview ----------------------------------------------------------------------------------------------
@@ -302,12 +313,35 @@ async function viewOverview(el) {
 const statusTag = (s) => (!s ? `<span class="muted small">${t("not checked yet")}</span>` : s === "ban" || s === "captcha" ? `<span class="tag ${s}">${act(s)}</span>` : `<span class="tag ok">${t("clear")}</span>`);
 
 // --- ASNs ------------------------------------------------------------------------------------------------------
+// One rule from a search hit or an IP check; consumer ISPs ("eyeball" networks) need a confirmation.
+async function addAsnRule(a, action) {
+  if (/eyeball/i.test(a.class || "") && !(await confirmDlg(t("Consumer network"), t("AS{asn} {name} is classified as an eyeball network (consumer ISP). Blocking it hits real visitors. Add anyway?", { asn: a.asn, name: esc(a.name) }), t("Add"), "danger"))) return false;
+  return putRules("/asns", [{ asn: a.asn, name: a.name || "", action, note: a.via ? t("from IP {ip}", { ip: a.via.ip }) : "" }]);
+}
+
+// Saves rules; if they would block the network this browser is connected from, asks for an explicit confirmation.
+async function putRules(path, body, method = "PUT") {
+  try {
+    await api(path, { method, body });
+    return true;
+  } catch (e) {
+    if (e.status !== 409 || e.detail?.code !== "own_asn") throw e;
+    const asns = e.detail.asns.map((a) => `AS${a}`).join(", ");
+    const ok = await confirmDlg(t("Block your own network?"),
+      t("{asns} is the network you are connected from right now ({ip}). Blocking it can lock you out of this page and other services – only continue if that is intended, e.g. for a hotel or office network.",
+        { asns: `<b>${esc(asns)}</b>`, ip: `<code>${esc(e.detail.ip)}</code>` }), t("Block anyway"), "danger");
+    if (!ok) return false;
+    await api(path + "?confirm_own=1", { method, body });
+    return true;
+  }
+}
+
 async function viewAsns(el) {
   el.innerHTML = `<div class="section"><div class="search" id="search">
-      <input type="search" id="q" placeholder="${t("Search ASN – number or name, e.g. hetzner, AS16509")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
+      <input type="search" id="q" placeholder="${t("Search ASN – number, name or an IP, e.g. hetzner, AS16509, 40.51.166.16")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
       <div class="suggest box" id="suggest" hidden></div></div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Rules")}</h2><p class="small muted">${t("New rules take effect after “Apply”.")}</p></div>
-      <div class="row"><input type="search" id="filter" placeholder="${t("Filter")}" aria-label="${t("Filter rules")}"><button class="btn" id="paste">${t("Paste list")}</button></div></div>
+      <div class="row"><input type="search" id="filter" placeholder="${t("Filter")}" aria-label="${t("Filter rules")}"><button class="btn" id="suggest-btn">${t("Suggestions")}</button><button class="btn" id="paste">${t("Paste list")}</button></div></div>
       <div class="bulk row" id="bulk" hidden><span id="bulk-count"></span><span class="spacer"></span>
         <button class="btn sm" data-bulk="ban">${t("Block")}</button><button class="btn sm" data-bulk="captcha">${t("Captcha")}</button>
         <button class="btn sm danger" data-bulk="delete">${t("Remove")}</button><button class="btn sm ghost" data-bulk="clear">${t("Clear selection")}</button></div>
@@ -335,7 +369,8 @@ async function viewAsns(el) {
         <td>${segAction(r.action)}</td>
         <td><input class="inline" data-note value="${esc(r.note)}" placeholder="—" aria-label="${t("Note for AS{asn}", { asn: r.asn })}"></td>
         <td class="actions"><button class="btn ghost sm danger" data-del aria-label="${t("Remove AS{asn}", { asn: r.asn })}">${t("Remove")}</button></td></tr>`).join("")}
-      </tbody></table>` : `<div class="empty">${t("No ASNs yet. Search above or paste an existing list.")}</div>`;
+      </tbody></table>` : `<div class="empty">${t("No ASNs yet. Search above, paste an existing list, or start with the suggestions.")} <button class="btn sm" id="suggest-empty">${t("Show suggestions")}</button></div>`;
+    $("#suggest-empty")?.addEventListener("click", () => $("#suggest-btn").click());
     $("#sel-all")?.addEventListener("change", (e) => { for (const r of visible()) e.target.checked ? selected.add(r.asn) : selected.delete(r.asn); draw(); });
     $$("#rules tr[data-asn]").forEach((tr) => {
       const r = rules.find((x) => x.asn == tr.dataset.asn);
@@ -350,7 +385,7 @@ async function viewAsns(el) {
     syncBulk();
   };
   const reload = async () => { rules = await api("/asns"); draw(); refreshOverview(); };
-  const save = async (rs) => { await api("/asns", { method: "PUT", body: rs.map((r) => ({ asn: r.asn, name: r.name, action: r.action, note: r.note })) }); await reload(); };
+  const save = async (rs) => { if (await putRules("/asns", rs.map((r) => ({ asn: r.asn, name: r.name, action: r.action, note: r.note })))) await reload(); };
   draw();
   $("#filter").oninput = draw;
   $$("[data-bulk]").forEach((b) => (b.onclick = guard(async () => {
@@ -378,15 +413,21 @@ async function viewAsns(el) {
     let res;
     try { res = await api("/asn/search?q=" + encodeURIComponent(term)); } catch (e) { sug.innerHTML = `<div class="empty">${esc(e.message)}</div>`; sug.hidden = false; return; }
     if (my !== seq) return;
-    sug.innerHTML = res.length ? res.map((r, i) => `<div class="item" data-i="${i}"><span class="mono">AS${r.asn}</span><span>${esc(r.name)} ${r.cc ? `<span class="muted small">${esc(r.cc)}</span>` : ""}</span>
+    if (res.length === 1 && res[0].asn === null) {
+      const v = res[0].via;
+      sug.innerHTML = `<div class="empty">${t("{ip} is not announced by any network right now, so there is no ASN to block.", { ip: `<code>${esc(v.ip)}</code>` })}${v.holder ? `<br>${t("Registered to: {holder}", { holder: esc(v.holder) })}` : ""}</div>`;
+      sug.hidden = false;
+      return;
+    }
+    sug.innerHTML = res.length ? res.map((r, i) => `<div class="item" data-i="${i}"><span class="mono">AS${r.asn}</span><span>${esc(r.name)} ${r.cc ? `<span class="muted small">${esc(r.cc)}</span>` : ""}${r.via ? `<br><span class="muted small">${t("IP {ip} is in {prefix}", { ip: esc(r.via.ip), prefix: esc(r.via.prefix || "?") })}</span>` : ""}</span>
         <span class="hide-sm">${classTag(r.class)}</span>
         <span class="row">${r.rule ? `<span class="tag ${r.rule}">${act(r.rule)}</span>` : `<button class="btn sm" data-a="ban">${t("Block")}</button><button class="btn sm" data-a="captcha">${t("Captcha")}</button>`}</span></div>`).join("")
       : `<div class="empty">${t("No ASN found.")}</div>`;
     sug.hidden = false;
     $$(".item", sug).forEach((it) => $$("[data-a]", it).forEach((b) => (b.onclick = guard(async () => {
       const r = res[it.dataset.i];
-      if (/eyeball/i.test(r.class || "") && !(await confirmDlg(t("Consumer network"), t("AS{asn} {name} is classified as an eyeball network (consumer ISP). Blocking it hits real visitors. Add anyway?", { asn: r.asn, name: esc(r.name) }), t("Add"), "danger"))) return;
-      await save([{ asn: r.asn, name: r.name, action: b.dataset.a, note: "" }]);
+      if (!(await addAsnRule(r, b.dataset.a))) return;
+      await reload();
       toast(t("AS{asn} added", { asn: r.asn }));
       search();
     }))));
@@ -401,14 +442,53 @@ async function viewAsns(el) {
     if (v !== "ok") return;
     const preview = await api("/asns/parse", { method: "POST", body: { text: $("#paste-text").value, action: $("#paste-action").value } });
     if (!preview.length) return toast(t("No ASNs recognised"), true);
+    await reviewImport(preview);
+  });
+
+  // Review a list of rules before importing it (paste and suggestions)
+  async function reviewImport(preview, { title, note = "", chooseAction = false } = {}) {
     const exist = new Set(rules.map((r) => r.asn));
-    const ok = await dialog({ title: t("Import {n} ASNs", { n: preview.length }), body: `<table><tbody>${preview.map((p) => `<tr><td class="mono">AS${p.asn}</td><td>${esc(p.name)}</td><td class="small muted">${esc(p.note)}</td><td>${exist.has(p.asn) ? `<span class="tag">${t("replaced")}</span>` : ""}</td></tr>`).join("")}</tbody></table>`,
-      actions: [["cancel", t("Cancel")], ["ok", t("Import"), "primary"]] });
+    const ok = await dialog({ title: title || t("Import {n} ASNs", { n: preview.length }), body: `${note}
+      ${chooseAction ? `<label class="field"><span>${t("Action")}</span><select id="sugg-action"><option value="ban">${t("Block")}</option><option value="captcha">${t("Captcha")}</option></select></label>` : ""}
+      <table><tbody>${preview.map((p) => `<tr><td class="mono">AS${p.asn}</td><td>${esc(p.name)}</td><td class="small muted">${esc(p.note)}</td><td>${exist.has(p.asn) ? `<span class="tag">${t("replaced")}</span>` : ""}</td></tr>`).join("")}</tbody></table>`,
+      actions: [["cancel", t("Cancel")], ["ok", t("Import"), "primary"]],
+      onOpen: chooseAction ? () => { $("#sugg-action").value = preview[0]?.action || "ban"; } : undefined });
     if (ok !== "ok") return;
-    await api("/asns", { method: "PUT", body: preview });
+    if (chooseAction) { const a = $("#sugg-action").value; preview = preview.map((p) => ({ ...p, action: a })); }
+    if (!(await putRules("/asns", preview))) return;
     toast(t("{n} ASNs imported", { n: preview.length }));
     await reload();
     api("/asns/stats", { method: "POST" }).then(reload).catch(() => {});
+  }
+
+  // Curated starting points
+  $("#suggest-btn").onclick = guard(async () => {
+    const sg = await api("/asns/suggestions");
+    const card = (l) => {
+      const fresh = l.asns.filter((a) => !a.present && !a.protected).length;
+      return `<div class="box pad sugg"><div class="row"><h3>${esc(t(l.title))}</h3><span class="spacer"></span>
+        <button class="btn sm primary" value="${esc(l.id)}" ${fresh ? "" : "disabled"}>${fresh ? t("Review {n} ASNs", { n: fresh }) : t("All added")}</button></div>
+        <p class="small">${esc(t(l.description))}</p><div class="note warn small">${esc(t(l.warning))}</div>
+        <p class="small muted mono">${l.asns.map((a) => `AS${a.asn} ${esc(a.note)}`).join(" · ")}</p></div>`;
+    };
+    const spam = `<div class="box pad sugg"><div class="row"><h3>Spamhaus ASN-DROP</h3><span class="spacer"></span>
+      <button class="btn sm primary" value="spamhaus" ${sg.spamhaus ? "disabled" : ""}>${sg.spamhaus ? t("Active") : t("Block automatically")}</button></div>
+      <p class="small">${t("Networks run entirely by cybercriminals, maintained by Spamhaus and refreshed on every run. A safe first step.")}</p></div>`;
+    const v = await dialog({ title: t("Suggested lists"), body: `<p class="small muted">${t("Not sure where to start? Pick a list – you review every ASN before anything is added.")}</p>${spam}${sg.lists.map(card).join("")}`,
+      actions: [["cancel", t("Close")]] });
+    if (v === "spamhaus") {
+      const s = await api("/settings");
+      const keep = ["interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "trusted_proxies", "auth_user_header"];
+      await api("/settings", { method: "PUT", body: { ...Object.fromEntries(keep.map((k) => [k, s[k]])), spamhaus_asndrop: "ban" } });
+      toast(t("Spamhaus ASN-DROP enabled – takes effect with the next run")); refreshOverview();
+      return;
+    }
+    const l = sg.lists.find((x) => x.id === v);
+    if (!l) return;
+    const skipped = l.asns.filter((a) => a.protected);
+    const preview = l.asns.filter((a) => !a.present && !a.protected).map((a) => ({ asn: a.asn, name: a.name, note: a.note, action: l.action }));
+    await reviewImport(preview, { title: t(l.title), chooseAction: true,
+      note: `<div class="note warn small">${esc(t(l.warning))}</div>${skipped.length ? `<p class="small muted">${t("Skipped because protected: {list}", { list: esc(skipped.map((a) => `AS${a.asn}`).join(", ")) })}</p>` : ""}` });
   });
 }
 const segAction = (a) => `<div class="seg" role="group" aria-label="${t("Action")}">${["ban", "captcha"].map((x) => `<button type="button" class="${x}" data-a="${x}" aria-pressed="${a === x}">${act(x)}</button>`).join("")}</div>`;
@@ -562,7 +642,7 @@ async function runDetail(id) {
 // --- Audit log -------------------------------------------------------------------------------------------------------
 const auditName = (a) => ({ "asn.put": t("ASN rule saved"), "asn.delete": t("ASN rule removed"), "vpn.put": t("VPN exemptions changed"),
   "exemption.add": t("Exemption added"), "exemption.delete": t("Exemption removed"), "watch.add": t("Watched IP added"),
-  "watch.delete": t("Watched IP removed"), "settings.put": t("Settings changed"), "crowdsec.put": t("CrowdSec connection changed"),
+  "watch.delete": t("Watched IP removed"), "settings.put": t("Settings changed"), "notify.put": t("Notifications changed"), "crowdsec.put": t("CrowdSec connection changed"),
   "crowdsec.cleanup": t("Old decisions removed"), "run.apply": t("Run started"), login: t("Signed in"), "setup.auth": t("Initial setup"),
   "account.password": t("Password changed"), import: t("Configuration imported"),
   "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed") }[a] ?? a);
@@ -603,18 +683,25 @@ async function viewSettings(el) {
     <label class="field"><span>${t("Spamhaus ASN-DROP")}</span><select name="spamhaus_asndrop"><option value="">${t("don’t use")}</option><option value="ban">${t("block automatically")}</option><option value="captcha">${t("captcha automatically")}</option></select>
       <small>${t("Public list of known abuse networks, refreshed on every run.")}</small></label></div>
     <label class="check"><input type="checkbox" name="include_ipv6" ${s.include_ipv6 ? "checked" : ""}><span>${t("Also block IPv6 prefixes")}</span></label>
-    <h3>${t("Notifications")}</h3>
-    <div class="grid2"><label class="field"><span>URL</span><input type="url" name="notify_url" class="mono" value="${esc(s.notify_url)}" placeholder="https://ntfy.example.com/asn-blocker">
-      <small>${t("ntfy: server and topic. Gotify: …/message. Webhook: any URL that accepts JSON.")}</small></label>
-    <label class="field"><span>${t("Format")}</span><select name="notify_format"><option value="ntfy">ntfy</option><option value="gotify">Gotify</option><option value="webhook">${t("Webhook (JSON)")}</option></select></label></div>
-    <div class="grid2"><label class="field"><span>${t("Access token (optional)")}</span><input type="password" name="notify_token" class="mono" autocomplete="off" placeholder="${s.notify_token_set ? t("saved – leave empty to keep") : "tk_…"}">
-      <small>${t("ntfy access token or Gotify app token. Sent as a header, never shown again. Required again if the server changes.")}</small></label>
-    ${s.notify_token_set ? `<label class="check mid"><input type="checkbox" name="notify_token_clear"><span>${t("Remove saved token")}</span></label>` : "<span></span>"}</div>
     <h3>${t("Access")}</h3>
     <div class="grid2"><label class="field"><span>${t("Trusted proxies")}</span><input type="text" name="trusted_proxies" class="mono" value="${esc((s.trusted_proxies || []).join(", "))}">
       <small>${s.auth_mode === "proxy" ? t("X-Forwarded-For and the user header are only accepted from here.") : t("X-Forwarded-For is only accepted from here.")}</small></label>
     <label class="field"><span>${t("User header")}</span><input type="text" name="auth_user_header" class="mono" value="${esc(s.auth_user_header)}" ${s.auth_mode === "proxy" ? "" : "disabled"}></label></div>
-    <div class="row"><button class="btn primary">${t("Save")}</button><button type="button" class="btn" id="ntest">${t("Test notification")}</button></div></form></div>
+    <button class="btn primary">${t("Save")}</button></form></div>
+
+  <div class="section"><div class="section-head"><div><h2>${t("Notifications")}</h2><p class="small muted">${t("Sent when a run fails or is stopped, and when a watched IP is affected.")}</p></div>
+    ${s.notify_url ? `<span class="tag ok">${t("active")}</span>` : `<span class="tag">${t("off")}</span>`}</div>
+  <form class="box pad" id="notify">
+    <div class="note danger small" id="nerr" role="alert" hidden></div>
+    <div class="grid2"><label class="field"><span>URL</span><input type="url" name="notify_url" class="mono" value="${esc(s.notify_url)}" placeholder="https://ntfy.example.com/asn-blocker">
+      <small>${t("ntfy: server and topic. Gotify: …/message. Webhook: any URL that accepts JSON. Empty = off.")}</small></label>
+    <label class="field"><span>${t("Format")}</span><select name="notify_format"><option value="ntfy">ntfy</option><option value="gotify">Gotify</option><option value="webhook">${t("Webhook (JSON)")}</option></select></label></div>
+    <div class="grid2"><label class="field"><span>${t("Access token (optional)")}</span><input type="password" name="notify_token" class="mono" autocomplete="off" placeholder="${s.notify_token_set ? t("saved – leave empty to keep") : "tk_…"}">
+      <small>${t("ntfy access token or Gotify app token. Sent as a header, never shown again. Required again if the server changes.")}</small></label>
+    ${s.notify_token_set ? `<label class="check mid"><input type="checkbox" name="notify_token_clear"><span>${t("Remove saved token")}</span></label>` : "<span></span>"}</div>
+    <div class="row"><button type="button" class="btn" id="ntest">${t("Send test")}</button>
+      <button class="btn primary" id="nsave" aria-disabled="true">${t("Save")}</button>
+      <span class="small muted" id="nhint">${t("Send a successful test first, then save.")}</span></div></form></div>
 
   ${s.auth_mode === "local" ? `<div class="section"><div class="section-head"><h2>${t("Change password")}</h2></div><form class="box pad" id="pw">
     <div class="grid2"><label class="field"><span>${t("Current password")}</span><input type="password" name="cur" autocomplete="current-password" required></label>
@@ -641,18 +728,40 @@ async function viewSettings(el) {
   });
   const g = $("#general");
   g.spamhaus_asndrop.value = s.spamhaus_asndrop || "";
-  g.notify_format.value = s.notify_format;
   g.onsubmit = guard(async (e) => {
     e.preventDefault();
     await api("/settings", { method: "PUT", body: {
       interval_hours: +g.interval_hours.value, decision_hours: +g.decision_hours.value, sanity_percent: +g.sanity_percent.value,
       include_ipv6: g.include_ipv6.checked, spamhaus_asndrop: g.spamhaus_asndrop.value || null,
-      notify_url: g.notify_url.value.trim(), notify_format: g.notify_format.value,
-      notify_token: g.notify_token_clear?.checked ? "" : g.notify_token.value.trim() || null, public_url: location.origin,
       trusted_proxies: g.trusted_proxies.value.split(",").map((x) => x.trim()).filter(Boolean), auth_user_header: g.auth_user_header.value.trim() } });
     toast(t("Saved")); refreshOverview(); viewSettings(el);
   });
-  $("#ntest").onclick = guard(async () => { await api("/notify/test", { method: "POST" }); toast(t("Test notification delivered")); });
+  const n = $("#notify");
+  n.notify_format.value = s.notify_format;
+  const ncfg = () => ({ notify_url: n.notify_url.value.trim(), notify_format: n.notify_format.value,
+    notify_token: n.notify_token_clear?.checked ? "" : n.notify_token.value.trim() || null, public_url: location.origin });
+  // Saving needs a successful test with exactly the current values (switching notifications off needs none)
+  let tested = false;
+  const nstate = () => {
+    const off = !n.notify_url.value.trim();
+    $("#nsave").setAttribute("aria-disabled", String(!(tested || off)));
+    $("#nhint").textContent = off ? t("Saving with an empty URL turns notifications off.") : tested ? t("Test delivered – you can save now.") : t("Send a successful test first, then save.");
+  };
+  const nerr = (msg) => { $("#nerr").textContent = msg || ""; $("#nerr").hidden = !msg; };
+  n.addEventListener("input", () => { tested = false; nerr(""); nstate(); });
+  nstate();
+  $("#ntest").onclick = async () => {
+    nerr("");
+    try { await api("/notify/test", { method: "POST", body: ncfg() }); tested = true; toast(t("Test notification delivered")); }
+    catch (e) { tested = false; nerr(t("Test failed: {e}", { e: e.message })); }
+    nstate();
+  };
+  n.onsubmit = async (e) => {
+    e.preventDefault();
+    if ($("#nsave").getAttribute("aria-disabled") === "true") { nerr(t("Not saved: send a successful test with these settings first.")); return; }
+    try { await api("/notify", { method: "PUT", body: ncfg() }); toast(t("Saved")); viewSettings(el); }
+    catch (err) { nerr(err.message); }
+  };
   $("#pw")?.addEventListener("submit", guard(async (e) => {
     e.preventDefault();
     await api("/account/password", { method: "PUT", body: { current: e.target.cur.value, new: e.target.new.value } });
@@ -662,7 +771,8 @@ async function viewSettings(el) {
     const data = JSON.parse(await e.target.files[0].text());
     const count = (x) => (Array.isArray(x) ? x.length : 0);
     if (!(await confirmDlg(t("Import configuration"), t("{a} ASN rules, {e} exemptions and {v} VPN countries will be added or overwritten.", { a: count(data.asns), e: count(data.exemptions), v: count(data.vpn) }), t("Import")))) return;
-    await api("/import", { method: "POST", body: data }); toast(t("Imported")); refreshOverview();
+    if (!(await putRules("/import", data, "POST"))) return;
+    toast(t("Imported")); refreshOverview();
   });
   $("#cleanup").onsubmit = guard(async (e) => {
     e.preventDefault();

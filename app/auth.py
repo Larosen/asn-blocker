@@ -5,6 +5,7 @@ import ipaddress
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 
 from fastapi import HTTPException, Request
 
@@ -41,20 +42,27 @@ def hash_password(pw: str) -> str:
 _DUMMY = "scrypt$" + "00" * 16 + "$" + "00" * 64
 
 
-def verify_password(pw: str, stored: str | None) -> bool:
-    """Constant work: always runs scrypt (against a dummy hash if nothing is stored)."""
+@contextmanager
+def hashing_slot():
+    """One of the two scrypt slots, taken *before* an attempt is counted: a flood that keeps the slots busy only
+    delays sign-ins, it cannot use up the admin's attempts."""
     if not _hashing.acquire(blocking=False):
         raise HTTPException(429, "Too many concurrent sign-in attempts, please try again")
     try:
-        try:
-            _, salt, h = (stored or _DUMMY).split("$")
-            calc = hashlib.scrypt(pw.encode()[:MAX_PASSWORD], salt=bytes.fromhex(salt), n=2**15, r=8, p=1,
-                                  maxmem=64 * 2**20)
-            return hmac.compare_digest(calc.hex(), h) and bool(stored)
-        except ValueError:
-            return False
+        yield
     finally:
         _hashing.release()
+
+
+def verify_password(pw: str, stored: str | None) -> bool:
+    """Constant work: always runs scrypt (against a dummy hash if nothing is stored). Call inside hashing_slot()."""
+    try:
+        _, salt, h = (stored or _DUMMY).split("$")
+        calc = hashlib.scrypt(pw.encode()[:MAX_PASSWORD], salt=bytes.fromhex(salt), n=2**15, r=8, p=1,
+                              maxmem=64 * 2**20)
+        return hmac.compare_digest(calc.hex(), h) and bool(stored)
+    except ValueError:
+        return False
 
 
 # --- Network / client IP ---------------------------------------------------------------------------------
@@ -84,7 +92,7 @@ def client_ip(request: Request) -> str:
     for ip in reversed(chain):
         if not _trusted(ip):
             return ip
-    return chain[0] if chain else peer
+    return peer  # every hop trusted: the leftmost entry is client-controlled, so don't use it
 
 
 def is_https(request: Request) -> bool:
@@ -149,29 +157,50 @@ def _bucket(ip: str) -> str:
     return str(a)
 
 
-def attempt(ip) -> str:
+def _wide_bucket(ip: str) -> str | None:
+    """IPv6 /48 (one site): a second, coarser limit so rotating through /64s does not multiply the budget."""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if a.version == 6 and not a.ipv4_mapped:
+        return "w:" + str(ipaddress.ip_network(f"{a}/48", strict=False))
+    return None
+
+
+LIMITS = {"narrow": 5, "wide": 20}  # attempts per 15 minutes
+
+
+def attempt(ip) -> list[str]:
     """Counts a sign-in attempt *before* the password check (so parallel requests cannot bypass the limit).
-    At most 5 attempts per 15 min per IP (IPv6: per /64). Returns the bucket key for forgive()."""
-    key, now = _bucket(ip), time.time()
+    At most 5 attempts per 15 min per IP (IPv6: per /64, and 20 per /48). Returns the bucket keys for forgive()."""
+    keys = [(_bucket(ip), LIMITS["narrow"])]
+    if wide := _wide_bucket(ip):
+        keys.append((wide, LIMITS["wide"]))
+    now = time.time()
     with _failed_lock:
-        if len(_failed) > 10000:  # bounded memory under IP rotation
+        if len(_failed) > 10000:  # bounded memory under IP rotation: drop stale, then the least recently used
             for k in [k for k, v in _failed.items() if not v or now - v[-1] >= 900]:
                 del _failed[k]
-            if len(_failed) > 10000:
-                _failed.clear()
-        tries = [t for t in _failed.get(key, []) if now - t < 900]
-        if len(tries) >= 5:
-            _failed[key] = tries
-            raise HTTPException(429, "Too many failed attempts, please try again later")
-        tries.append(now)
-        _failed[key] = tries
-    return key
+            for k in sorted(_failed, key=lambda k: _failed[k][-1])[:max(0, len(_failed) - 9000)]:
+                del _failed[k]
+        recent = {k: [t for t in _failed.get(k, []) if now - t < 900] for k, _ in keys}
+        for k, limit in keys:
+            if len(recent[k]) >= limit:
+                _failed[k] = recent[k]
+                raise HTTPException(429, "Too many failed attempts, please try again later")
+        for k, _ in keys:
+            _failed[k] = recent[k] + [now]
+    return [k for k, _ in keys]
 
 
-def forgive(key):
-    """Successful sign-in: the attempt does not count."""
+def forgive(keys):
+    """Successful sign-in: the narrow bucket is cleared, the wide one only loses this attempt."""
     with _failed_lock:
-        _failed.pop(key, None)
+        _failed.pop(keys[0], None)
+        for k in keys[1:]:
+            if _failed.get(k):
+                _failed[k].pop()
 
 
 # --- Request checks ------------------------------------------------------------------------------------------

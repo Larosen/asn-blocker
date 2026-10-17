@@ -4,8 +4,11 @@ import io
 import ipaddress
 import json
 import os
+import re
 import socket
+import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,50 +22,81 @@ RIPE_APP = "asn-blocker"
 PREFIX_TTL = 6 * 3600
 PROVIDER_TTL = 3600
 CONTINENTS = json.loads((Path(__file__).parent / "data" / "continents.json").read_text())
+_COUNTRIES = json.loads((Path(__file__).parent / "data" / "country_names.json").read_text())
+COUNTRY_CODES, COUNTRY_NAMES = _COUNTRIES["codes"], _COUNTRIES["names"]  # lower-case name -> ISO-2, ISO-2 -> name
 
 
 class SourceError(RuntimeError):
     pass
 
 
-MAX_BYTES = 64 * 2**20  # largest real response: NordVPN server list, ~27 MB
+MAX_BYTES = 16 * 2**20  # default size cap per response (after decompression); largest real one: bgp.tools ~6 MB
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
 
 
-def _fetch(url, params, timeout):
-    """GET with a hard size cap (after decompression), an overall deadline and redirects only to https on the
-    same host."""
+def clean(value, limit=120):
+    """External text for logs and messages: no control or bidi characters (forged log lines), bounded length."""
+    s = _CONTROL.sub("?", str(value))
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _fetch_once(url, params, timeout, max_bytes, client_box):
     deadline = time.monotonic() + timeout
     host = httpx.URL(url).host
-    for _ in range(4):
-        with httpx.stream("GET", url, params=params, timeout=min(timeout, 30), follow_redirects=False,
-                          headers={"User-Agent": USER_AGENT}) as r:
-            if r.is_redirect:
-                nxt = r.url.join(r.headers.get("location", ""))
-                if nxt.scheme != "https" or nxt.host != host:
-                    raise httpx.HTTPError(f"refused redirect to {nxt.scheme}://{nxt.host}")
-                url, params = str(nxt), None
-                continue
-            r.raise_for_status()
-            buf = bytearray()
-            for chunk in r.iter_bytes():
-                buf += chunk
-                if len(buf) > MAX_BYTES:
-                    raise httpx.HTTPError(f"response larger than {MAX_BYTES // 2**20} MB")
-                if time.monotonic() > deadline:
-                    raise httpx.HTTPError(f"no complete response within {timeout} s")
-            return bytes(buf), r.encoding or "utf-8"
-    raise httpx.HTTPError("too many redirects")
+    with httpx.Client(timeout=min(timeout, 30), follow_redirects=False, headers={"User-Agent": USER_AGENT}) as client:
+        client_box.append(client)
+        for _ in range(4):
+            with client.stream("GET", url, params=params) as r:
+                if r.is_redirect:
+                    nxt = r.url.join(r.headers.get("location", ""))
+                    if nxt.scheme != "https" or nxt.host != host:
+                        raise httpx.HTTPError(f"refused redirect to {nxt.scheme}://{nxt.host}")
+                    url, params = str(nxt), None
+                    continue
+                r.raise_for_status()
+                buf = bytearray()
+                for chunk in r.iter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        raise httpx.HTTPError(f"response larger than {max_bytes // 2**20} MB")
+                    if time.monotonic() > deadline:
+                        raise httpx.HTTPError(f"no complete response within {timeout} s")
+                return buf
+        raise httpx.HTTPError("too many redirects")
 
 
-def http_get(url, params=None, timeout=60, as_text=False):
+def _fetch(url, params, timeout, max_bytes=MAX_BYTES):
+    """GET with a hard size cap (after decompression), redirects only to https on the same host, and an overall
+    deadline that is enforced from outside – a server dripping header bytes cannot hold a run for hours."""
+    result, client_box = {}, []
+
+    def work():
+        try:
+            result["body"] = _fetch_once(url, params, timeout, max_bytes, client_box)
+        except Exception as e:  # noqa: BLE001 - handed to the caller
+            result["error"] = e
+
+    t = threading.Thread(target=work, daemon=True, name="fetch")
+    t.start()
+    t.join(timeout + 5)
+    if t.is_alive():
+        for c in client_box:
+            c.close()  # abandons the connection; the thread ends with the socket
+        raise httpx.HTTPError(f"no complete response within {timeout} s")
+    if "error" in result:
+        raise result["error"]
+    return result["body"]
+
+
+def http_get(url, params=None, timeout=60, as_text=False, max_bytes=MAX_BYTES):
     last = None
     for _ in range(3):
         try:
-            body, enc = _fetch(url, params, timeout)
-            return body.decode(enc, errors="replace") if as_text else json.loads(body)
+            body = _fetch(url, params, timeout, max_bytes)
+            return body.decode("utf-8", errors="replace") if as_text else json.loads(body)
         except (httpx.HTTPError, ValueError) as e:
             last = e
-    raise SourceError(f"{url}: {last}")
+    raise SourceError(f"{clean(url)}: {clean(last)}")
 
 
 def _ripe(endpoint, resource, timeout=60):
@@ -77,7 +111,7 @@ def refresh_asn_names():
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         n = str(r.get("asn", "")).upper().removeprefix("AS")
-        if n.isdigit():
+        if re.fullmatch(r"[0-9]{1,10}", n) and int(n) < 2**32:
             rows.append((int(n), r.get("name") or "", r.get("class") or "", r.get("cc") or ""))
     if len(rows) < 10000:
         raise SourceError(f"bgp.tools asns.csv implausible ({len(rows)} rows)")
@@ -94,7 +128,7 @@ def search_asn(query, limit=25):
         return []
     digits = q.upper().removeprefix("AS")
     have_local = db.q1("SELECT 1 AS x FROM asn_names LIMIT 1")
-    if digits.isdigit():
+    if re.fullmatch(r"[0-9]{1,10}", digits) and int(digits) < 2**32:
         rows = db.q("SELECT asn,name,class,cc FROM asn_names WHERE asn=? OR CAST(asn AS TEXT) LIKE ? "
                     "ORDER BY asn=? DESC, asn LIMIT ?", (int(digits), digits + "%", int(digits), limit))
         if rows or have_local:
@@ -111,7 +145,7 @@ def search_asn(query, limit=25):
         if cat.get("category") == "ASNs":
             for s in cat.get("suggestions", []):
                 v = str(s.get("value", "")).upper().removeprefix("AS")
-                if v.isdigit():
+                if re.fullmatch(r"[0-9]{1,10}", v) and 0 < int(v) < 2**32:
                     out.append({"asn": int(v), "name": s.get("description") or s.get("label") or "", "class": "", "cc": ""})
     return out[:limit]
 
@@ -153,7 +187,25 @@ def ip_info(ip):
     if hit is not None:
         return hit
     d = _ripe("network-info", ip, 20)
-    out = {"asns": [int(a) for a in d.get("asns", []) if str(a).isdigit()], "prefix": d.get("prefix")}
+    out = {"asns": [int(a) for a in d.get("asns") or [] if re.fullmatch(r"[0-9]{1,10}", str(a)) and 0 < int(a) < 2**32],
+           "prefix": str(d.get("prefix") or "")[:64]}
+    db.cache_put(key, out)
+    return out
+
+
+def ip_holder(ip):
+    """Registered holder of an address block (whois via RIPEstat, any registry), cached for a day."""
+    key = f"holder:{ip}"
+    hit = db.cache_get(key, 86400)
+    if hit is not None:
+        return hit
+    d = _ripe("whois", ip, 20)
+    found = {}
+    for rec in d.get("records") or []:
+        for r in rec if isinstance(rec, list) else []:
+            if isinstance(r, dict) and str(r.get("key", "")).lower() in ("organization", "orgname", "org-name", "descr", "netname"):
+                found.setdefault(str(r["key"]).lower(), str(r.get("value", ""))[:200])
+    out = next((found[k] for k in ("organization", "orgname", "org-name", "descr", "netname") if found.get(k)), "")
     db.cache_put(key, out)
     return out
 
@@ -191,20 +243,31 @@ def _public_ip(v):
     return str(a) if a.is_global else None
 
 
+MAX_ENTRIES = 50000  # largest real list: NordVPN ~14,500 entries
+MAX_HOSTNAMES = 3000
+
+
 class Provider:
     id = name = note = ""
     exit_asn = None  # known ASN of the exit IPs, shown as a hint in the UI
+    host_suffix = None  # providers that list hostnames: only names in their own domain are resolved
 
     def fetch(self):
         raise NotImplementedError
 
-    def entries(self):
+    def entries(self, fresh=False):
         key = f"vpn:{self.id}"
-        hit = db.cache_get(key, PROVIDER_TTL)
+        hit = None if fresh else db.cache_get(key, PROVIDER_TTL)
         if hit is None:
-            hit = [[str(e[0]), str(e[1]), str(e[2])] for e in self.fetch() if e[0] and e[2]]
+            try:
+                rows = self.fetch()
+                hit = [[clean(e[0], 2).upper(), clean(e[1], 60), clean(e[2], 255)] for e in rows if e[0] and e[2]]
+            except (AttributeError, TypeError, KeyError, IndexError, ValueError) as e:
+                raise SourceError(f"{self.name}: unexpected server list format ({type(e).__name__})") from e
             if not hit:
                 raise SourceError(f"{self.name}: empty server list")
+            if len(hit) > MAX_ENTRIES:
+                raise SourceError(f"{self.name}: implausible server list ({len(hit)} entries)")
             db.cache_put(key, hit)
         return hit
 
@@ -218,15 +281,23 @@ class Provider:
 
     def ips(self, code):
         vals = [v for cc, _, v in self.entries() if cc.upper() == code]
-        hosts = [v for v in vals if _public_ip(v) is None and any(ch.isalpha() for ch in v)]
         ips = {_public_ip(v) for v in vals} - {None}
+        hosts = [v.lower() for v in vals if self.host_suffix and _public_ip(v) is None
+                 and re.fullmatch(r"[a-z0-9.-]{1,253}", v.lower()) and v.lower().endswith(self.host_suffix)]
+        if len(hosts) > MAX_HOSTNAMES:
+            raise SourceError(f"{self.name} {code}: implausible number of hostnames ({len(hosts)})")
         if hosts:
-            with ThreadPoolExecutor(16) as ex:
-                for res in ex.map(_resolve, hosts):
-                    ips.update(filter(None, map(_public_ip, res)))
+            ex = ThreadPoolExecutor(16)
+            try:
+                for res in ex.map(_resolve, hosts, timeout=120):
+                    ips.update(filter(None, map(_public_ip, res[:64])))
+            except TimeoutError as e:
+                raise SourceError(f"{self.name} {code}: DNS resolution took longer than 120 s") from e
+            finally:
+                ex.shutdown(wait=False, cancel_futures=True)
             if not ips:
                 raise SourceError(f"{self.name} {code}: DNS resolution failed for {len(hosts)} hostnames "
-                                  f"(e.g. {hosts[0]}) – does the container have DNS?")
+                                  f"(e.g. {clean(hosts[0], 80)}) – does the container have DNS?")
         return sorted(ips)
 
 
@@ -242,7 +313,10 @@ class NordVPN(Provider):
     note = "api.nordvpn.com – entry IPs; exit IPs are usually in AS207137 (PacketHub)."
 
     def fetch(self):
-        servers = http_get("https://api.nordvpn.com/v1/servers", {"limit": 20000}, timeout=180)
+        # only the fields needed: ~1 MB instead of ~27 MB (the full list needed ~170 MB of memory to parse)
+        fields = ("station", "ips.ip.ip", "locations.country.code", "locations.country.name")
+        servers = http_get("https://api.nordvpn.com/v1/servers",
+                           {"limit": 20000} | {f"fields[servers.{f}]": "" for f in fields}, timeout=180)
         out = []
         for s in servers:
             loc = (s.get("locations") or [{}])[0].get("country") or {}
@@ -265,6 +339,7 @@ class Mullvad(Provider):
 
 class Surfshark(Provider):
     id, name = "surfshark", "Surfshark"
+    host_suffix = ".surfshark.com"
     note = "api.surfshark.com – hostnames only, IPs resolved via DNS."
 
     def fetch(self):
@@ -314,4 +389,116 @@ class AirVPN(Provider):
         return out
 
 
-PROVIDERS = {p.id: p for p in (NordVPN(), Mullvad(), Surfshark(), IVPN(), PIA(), AirVPN())}
+def _cc(*names):
+    """ISO-2 for free-text country names such as 'USA Austin', 'Korea (South)' or 'Hong' + 'Kong'."""
+    for name in names:
+        words = re.sub(r"\s*\([^)]{0,40}\)", "", str(name or "")[:80]).strip().lower().split()[:5]
+        for n in range(len(words), 0, -1):
+            code = COUNTRY_CODES.get(" ".join(words[:n]))
+            if code:
+                return code
+    return ""
+
+
+def _zip_names(url, timeout=120, max_bytes=16 * 2**20, max_entries=20000):
+    """File names inside a remote zip. Only the directory is read – nothing is decompressed."""
+    try:
+        data = bytes(_fetch(url, None, timeout, max_bytes))
+        eocd = data.rfind(b"PK\x05\x06")  # end of central directory: check the entry count before parsing
+        if eocd < 0 or int.from_bytes(data[eocd + 10:eocd + 12], "little") > max_entries:
+            raise zipfile.BadZipFile("missing directory or too many entries")
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return z.namelist()[:max_entries]
+    except (httpx.HTTPError, zipfile.BadZipFile, ValueError, LookupError, KeyError, TypeError, OSError) as e:
+        raise SourceError(f"{clean(url)}: {clean(e)}") from e
+
+
+class Windscribe(Provider):
+    id, name = "windscribe", "Windscribe"
+    note = "assets.windscribe.com – connection IPs of every node (three per node)."
+
+    def fetch(self):
+        out = []
+        for loc in http_get("https://assets.windscribe.com/serverlist/mob-v2/1/0").get("data", []):
+            cc = str(loc.get("country_code", "")).upper()
+            for g in loc.get("groups") or []:
+                for n in g.get("nodes") or []:
+                    out += [(cc, COUNTRY_NAMES.get(cc, cc), n[k]) for k in ("ip", "ip2", "ip3") if n.get(k)]
+        return out
+
+
+class OVPN(Provider):
+    id, name = "ovpn", "OVPN"
+    note = "ovpn.com client API."
+
+    def fetch(self):
+        return [(str(d.get("country", "")).upper(), d.get("country_name", ""), s.get("ip"))
+                for d in http_get("https://www.ovpn.com/v2/api/client/entry").get("datacenters", [])
+                for s in d.get("servers") or []]
+
+
+class Privado(Provider):
+    id, name = "privado", "PrivadoVPN"
+    note = "privadovpn.com server export."
+
+    def fetch(self):
+        out = []
+        for s in http_get("https://privadovpn.com/apps/servers_export.json").get("servers", []):
+            cc = _cc(s.get("country"))
+            out.append((cc, COUNTRY_NAMES.get(cc, ""), s.get("ip")))
+        return out
+
+
+class IPVanish(Provider):
+    id, name = "ipvanish", "IPVanish"
+    host_suffix = ".ipvanish.com"
+    note = "configs.ipvanish.com OpenVPN configs (~5 MB) – hostnames, IPs resolved via DNS."
+
+    def fetch(self):
+        out = []
+        for f in _zip_names("https://configs.ipvanish.com/openvpn/v2.6.0-0/configs.zip"):
+            m = re.match(r"ipvanish-([A-Z]{2})-.*-([a-z0-9]+-[a-z]\d+)\.ovpn$", f)
+            if m:  # ipvanish-DE-Frankfurt-fra-a01.ovpn -> fra-a01.ipvanish.com
+                out.append((m[1], COUNTRY_NAMES.get(m[1], m[1]), f"{m[2]}.ipvanish.com"))
+        return out
+
+
+class ProtonVPN(Provider):
+    id, name = "protonvpn", "Proton VPN"
+    note = ("Exit IPs from github.com/tn3w/ProtonVPN-IPs (third party, updated daily) – Proton's own API needs a "
+            "login.")
+
+    def fetch(self):
+        data = http_get("https://raw.githubusercontent.com/tn3w/ProtonVPN-IPs/master/protonvpn_logicals.json")
+        return [(str(lg.get("ExitCountry", "")).upper(), COUNTRY_NAMES.get(lg.get("ExitCountry", ""), ""), s.get("ExitIP"))
+                for lg in data.get("LogicalServers", []) for s in lg.get("Servers") or []]
+
+
+class Gluetun(Provider):
+    """Providers without a public list of their own: server data collected by the gluetun project
+    (github.com/qdm12/gluetun-servers, MIT), refreshed roughly monthly."""
+    BASE = "https://raw.githubusercontent.com/qdm12/gluetun-servers/main/pkg/servers/"
+
+    def __init__(self, id, name, file):
+        self.id, self.name, self.file = id, name, file
+        self.note = ("Server IPs collected by the gluetun project (third party, updated about monthly); "
+                     "locations may be virtual.")
+
+    def fetch(self):
+        out = []
+        for s in http_get(self.BASE + self.file.replace(" ", "%20") + ".json").get("servers", []):
+            name = s.get("country") or s.get("region") or ""
+            cc = _cc(name, f"{name} {s.get('city', '')}")
+            out += [(cc, COUNTRY_NAMES.get(cc, name), ip) for ip in s.get("ips") or []]
+        return out
+
+
+PROVIDERS = {p.id: p for p in (
+    NordVPN(), Mullvad(), Surfshark(), IVPN(), PIA(), AirVPN(), ProtonVPN(), Windscribe(), IPVanish(), Privado(),
+    OVPN(),
+    Gluetun("purevpn", "PureVPN", "purevpn"), Gluetun("expressvpn", "ExpressVPN", "expressvpn"),
+    Gluetun("cyberghost", "CyberGhost", "cyberghost"), Gluetun("torguard", "TorGuard", "torguard"),
+    Gluetun("privatevpn", "PrivateVPN", "privatevpn"), Gluetun("vyprvpn", "VyprVPN", "vyprvpn"),
+    Gluetun("fastestvpn", "FastestVPN", "fastestvpn"), Gluetun("vpnunlimited", "VPN Unlimited", "vpn unlimited"),
+    Gluetun("vpnsecure", "VPNSecure", "vpnsecure"),
+)}

@@ -25,3 +25,8 @@ Only the latest release (`:latest` and the newest `x.y` tag) receives security f
   the data volume with mode 0600. The LAPI password and the notification URL are never sent back to the browser in full.
 - **Supply chain:** dependencies are pinned with hashes, GitHub Actions and base images by digest; images are scanned
   with Trivy before `:latest` or a version tag is published.
+- **Accepted limits:** every account that logs in over SSH (including restricted accounts such as SFTP or git users)
+  counts as an active session and its IP is exempted while the session lasts. The confirmation before blocking your
+  own network is a safety net against mistakes, not a security boundary: it is skipped if the network cannot be
+  determined. VPN server lists from third parties (Proton VPN, gluetun) can only add exemptions for single public
+  addresses in the countries you selected.

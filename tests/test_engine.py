@@ -183,7 +183,7 @@ def test_json_logging(capsys, monkeypatch):
 
 def test_dns_failure_is_reported(monkeypatch):
     class S(sources.Provider):
-        id, name = "x", "Surfshark"
+        id, name, host_suffix = "x", "Surfshark", ".example.com"
 
         def fetch(self):
             return [("DE", "Germany", "de-fra.prod.example.com")]
@@ -191,6 +191,27 @@ def test_dns_failure_is_reported(monkeypatch):
     monkeypatch.setattr(sources, "_resolve", lambda h: [])
     with pytest.raises(sources.SourceError, match="DNS resolution"):
         S().ips("DE")
+
+
+def test_hostnames_only_resolved_in_the_providers_domain(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sources, "_resolve", lambda h: calls.append(h) or ["8.8.8.8"])
+
+    class P(sources.Provider):
+        id, name, host_suffix = "p", "P", ".vpn.example"
+
+        def fetch(self):
+            return [("DE", "Germany", "a.vpn.example"), ("DE", "Germany", "evil.attacker.example"),
+                    ("DE", "Germany", "1.1.1.1")]
+
+    class Q(sources.Provider):
+        id, name = "q", "Q"     # IP lists only: hostnames are never resolved
+
+        def fetch(self):
+            return [("DE", "Germany", "x.attacker.example"), ("DE", "Germany", "1.0.0.1")]
+
+    assert P().ips("DE") == ["1.1.1.1", "8.8.8.8"] and calls == ["a.vpn.example"]
+    assert Q().ips("DE") == ["1.0.0.1"] and calls == ["a.vpn.example"]
 
 
 def test_poisoned_source_cannot_block_private_or_huge_ranges(env, monkeypatch):
@@ -218,3 +239,104 @@ def test_sanity_detects_address_space_jump_with_same_range_count(env, monkeypatc
     monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: halved[a])
     engine.run("apply", "test")
     assert last_run()["status"] == "blocked" and "address space" in last_run()["log"], last_run()["log"]
+
+
+def test_ipv6_flood_is_capped(env, monkeypatch):
+    db.put("include_ipv6", True)
+    flood = {**PREFIXES, 1: [f"{i:x}::/16" for i in range(0x2002, 0x4000)]}   # merges into 2000::/3-sized blocks
+    monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: flood[a])
+    engine.run("apply", "test")
+    assert last_run()["status"] == "blocked" and "IPv6 /48" in last_run()["log"]
+    assert env.decisions == []
+
+
+def test_range_count_cap_on_first_run(env, monkeypatch):
+    monkeypatch.setattr(engine, "MAX_RANGES", 10)
+    engine.run("apply", "test")
+    assert last_run()["status"] == "blocked" and "ranges would be pushed" in last_run()["log"]
+
+
+def test_huge_exempt_asn_prefix_is_ignored(env, monkeypatch):
+    poisoned = {**PREFIXES, 3: ["0.0.0.0/0", "::/0", "11.0.7.0/24"]}
+    monkeypatch.setattr(sources, "asn_prefixes", lambda a, use_cache=True: poisoned[a])
+    engine.run("apply", "test")
+    assert last_run()["status"] == "ok" and "exempt AS3" in last_run()["log"]
+    assert engine.status_of("11.0.1.1", {"ban": list(applied("ban"))}) == "ban"
+
+
+def test_ipv4_mapped_protection_covers_the_ipv4_address(env):
+    from app import selfprotect
+    selfprotect.add("ip", "::ffff:11.0.1.5", "mapped")
+    engine.run("apply", "test")
+    assert last_run()["status"] == "ok", last_run()["log"]
+    assert engine.status_of("11.0.1.5", {"ban": list(applied("ban"))}) is None
+
+
+def test_additions_happen_before_any_deletion(env):
+    engine.run("apply", "test")
+    with db.tx() as c:   # AS2 moves its ranges from captcha to ban
+        c.execute("UPDATE asn_rules SET action='ban' WHERE asn=2")
+    env.calls.clear()
+    engine.run("apply", "test", force=True)
+    ops = [c[0] for c in env.calls]
+    assert "add" in ops and "delete" in ops and max(i for i, o in enumerate(ops) if o == "add") < ops.index("delete")
+
+
+def test_run_log_strips_control_characters(env, monkeypatch):
+    from app import selfprotect
+    selfprotect.add("ip", "198.51.100.77", "a\n12:00:00 Done‮")
+    engine.run("apply", "test")
+    assert "\n12:00:00 Done" not in last_run()["log"] and "‮" not in last_run()["log"]
+
+
+def test_fetch_deadline_holds_against_dripping_headers():
+    import socket
+    import threading
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    stop = threading.Event()
+
+    def drip():
+        conn, _ = srv.accept()
+        conn.recv(1024)
+        conn.sendall(b"HTTP/1.1 200 OK\r\n")
+        while not stop.is_set():
+            try:
+                conn.sendall(b"X-Slow: 1\r\n")
+            except OSError:
+                break
+            stop.wait(0.5)
+        conn.close()
+
+    threading.Thread(target=drip, daemon=True).start()
+    t0 = time.monotonic()
+    with pytest.raises(sources.httpx.HTTPError):
+        sources._fetch(f"http://127.0.0.1:{srv.getsockname()[1]}/", None, timeout=1)
+    stop.set()
+    assert time.monotonic() - t0 < 10
+
+
+def test_zip_with_too_many_entries_is_refused(monkeypatch):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for i in range(30):
+            z.writestr(f"f{i}.ovpn", "")
+    monkeypatch.setattr(sources, "_fetch", lambda *a, **k: bytearray(buf.getvalue()))
+    assert len(sources._zip_names("https://x.example/a.zip")) == 30
+    with pytest.raises(sources.SourceError):
+        sources._zip_names("https://x.example/a.zip", max_entries=10)
+
+
+def test_country_name_parsing_is_bounded():
+    t0 = time.monotonic()
+    assert sources._cc("(" * 200000) == "" and sources._cc("word " * 100000) == ""
+    assert sources._cc("USA Austin") == "US" and sources._cc("Korea (South)") == "KR"
+    assert time.monotonic() - t0 < 1
+
+
+def test_clean_removes_control_and_bidi():
+    assert sources.clean("a\nb\x1b[31m‮c") == "a?b?[31m?c"
+    assert sources.clean("x" * 500, 10) == "x" * 10 + "…"

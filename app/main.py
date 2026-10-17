@@ -14,14 +14,14 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources
+from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources, suggestions
 
 logs.setup()
 log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.5.5"
+VERSION = "0.6.0"
 
 
 @asynccontextmanager
@@ -195,8 +195,9 @@ def login(body: Login, request: Request, response: Response):
     if db.get("auth_mode") != "local":
         raise HTTPException(400, "Local login is not enabled")
     ip = auth.client_ip(request)
-    key = auth.attempt(ip)
-    pw_ok = auth.verify_password(body.password, db.get("local_password_hash"))  # always hashes: no user enumeration
+    with auth.hashing_slot():
+        key = auth.attempt(ip)
+        pw_ok = auth.verify_password(body.password, db.get("local_password_hash"))  # always hashes: no enumeration
     if not (hmac.compare_digest(body.username.encode(), (db.get("local_user") or "").encode()) and pw_ok):
         raise HTTPException(401, "Wrong username or password")
     auth.forgive(key)
@@ -221,8 +222,10 @@ class Password(BaseModel):
 def change_password(body: Password, user: str = Depends(require_user)):
     if db.get("auth_mode") != "local":
         raise HTTPException(400, "Local login is not enabled")
-    key = auth.attempt(f"account:{user}")
-    if not auth.verify_password(body.current, db.get("local_password_hash")):
+    with auth.hashing_slot():
+        key = auth.attempt(f"account:{user}")
+        ok = auth.verify_password(body.current, db.get("local_password_hash"))
+    if not ok:
         raise HTTPException(400, "Current password is wrong")
     auth.forgive(key)
     db.put("local_password_hash", auth.hash_password(body.new))
@@ -265,7 +268,7 @@ def overview(request: Request, user: str = Depends(require_user)):
         "crowdsec_mode": db.get("crowdsec_mode"), "interval_hours": db.get("interval_hours"),
         "asn_names": db.q1("SELECT count(*) n FROM asn_names")["n"],
         "untrusted_proxy": auth.untrusted_proxy(request) if db.get("auth_mode") == "local" else None,
-        "broad_proxies": auth.broad_trusted_proxies() if db.get("auth_mode") == "proxy" else [],
+        "broad_proxies": auth.broad_trusted_proxies(),
     }
 
 
@@ -281,7 +284,26 @@ def _src(fn, *a, **kw):
 @api.get("/asn/search")
 def asn_search(q: str = Query(max_length=100)):
     rules = {r["asn"]: r["action"] for r in db.q("SELECT asn, action FROM asn_rules")}
-    return [{**r, "rule": rules.get(r["asn"])} for r in _src(sources.search_asn, q)]
+    try:
+        ip = ipaddress.ip_address(q.strip())
+    except ValueError:
+        return [{**r, "rule": rules.get(r["asn"])} for r in _src(sources.search_asn, q)]
+    # An IP (e.g. from a CrowdSec alert): which network does it belong to?
+    if not ip.is_global:
+        raise HTTPException(422, f"{ip} is not a public address")
+    info = _src(sources.ip_info, str(ip))
+    if not info["asns"]:  # not routed: there is no network to block
+        try:
+            holder = sources.ip_holder(str(ip))
+        except sources.SourceError:
+            holder = ""
+        return [{"asn": None, "rule": None, "via": {"ip": str(ip), "prefix": None, "holder": holder}}]
+    out = []
+    for asn in info["asns"]:
+        n = db.q1("SELECT name, class, cc FROM asn_names WHERE asn=?", (asn,)) or {}
+        out.append({"asn": asn, "name": n.get("name", ""), "class": n.get("class", ""), "cc": n.get("cc", ""),
+                    "rule": rules.get(asn), "via": {"ip": str(ip), "prefix": info.get("prefix")}})
+    return out
 
 
 def _prefix_stats(asn):
@@ -313,14 +335,49 @@ class AsnRule(BaseModel):
     note: str = Field("", max_length=500)
 
 
+def _own_asns(request: Request) -> dict[int, str]:
+    """ASNs of the network the current browser request comes from ({asn: ip}); empty if unknown."""
+    ip = auth.client_ip(request)
+    try:
+        if not ipaddress.ip_address(ip).is_global:
+            return {}
+        return {a: ip for a in sources.ip_info(ip)["asns"]}
+    except (ValueError, sources.SourceError):
+        return {}
+
+
+def _guard_own_asn(asns, request: Request, confirmed: bool):
+    """Blocking the network you are connected from needs an explicit confirmation (e.g. a hotel or office network)."""
+    existing = {r["asn"] for r in db.q("SELECT asn FROM asn_rules")}
+    new = set(asns) - existing
+    own = _own_asns(request) if new else {}
+    hit = sorted(new & set(own))
+    if hit and not confirmed:
+        raise HTTPException(409, {"code": "own_asn", "asns": hit, "ip": own[hit[0]],
+                                  "message": f"AS{hit[0]} is the network you are connected from ({own[hit[0]]}). "
+                                             "Blocking it can lock you out of this page."})
+
+
+@api.get("/asns/suggestions")
+def asn_suggestions():
+    existing = {r["asn"] for r in db.q("SELECT asn FROM asn_rules")}
+    protected = selfprotect.protected_asns()
+    return {"spamhaus": db.get("spamhaus_asndrop"), "lists": [
+        {k: v for k, v in lst.items() if k != "asns"}
+        | {"asns": [{"asn": a, "name": sources.asn_name(a) or label, "note": label, "present": a in existing,
+                     "protected": a in protected} for a, label in lst["asns"]]}
+        for lst in suggestions.LISTS]}
+
+
 @api.put("/asns")
-def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
+def put_asns(rules: list[AsnRule], request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
     if len(rules) > 5000:
         raise HTTPException(422, "At most 5000 rules per request")
     blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
     if blocked:
         raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
                             + " is protected and cannot be blocked")
+    _guard_own_asn([r.asn for r in rules], request, confirm_own)
     now = time.time()
     with db.tx() as c:
         for r in rules:
@@ -329,7 +386,7 @@ def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
                       "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, "
                       "note=excluded.note, updated_at=excluded.updated_at", (r.asn, name, r.action, r.note, now))
         db.bump_rev(c)
-    db.audit(user, "asn.put", [r.model_dump() for r in rules])
+    db.audit(user, "asn.put", [r.model_dump() for r in rules] + ([{"confirmed_own_network": True}] if confirm_own else []))
     return {"ok": True}
 
 
@@ -453,12 +510,21 @@ def _asn(v: str) -> int:
     return int(digits)
 
 
-@api.post("/exemptions")
-def add_exemption(e: Exemption, user: str = Depends(require_user)):
+def _exemption_value(e: Exemption) -> str:
     try:
-        value = str(_asn(e.value)) if e.kind == "asn" else str(ipaddress.ip_network(e.value.strip(), strict=False))
+        if e.kind == "asn":
+            return str(_asn(e.value))
+        net = ipaddress.ip_network(e.value.strip(), strict=False)
     except ValueError:
         raise HTTPException(422, f"Invalid: {e.value}")
+    if net.prefixlen < engine.MIN_PREFIXLEN[net.version]:  # would silently switch off blocking for huge areas
+        raise HTTPException(422, f"{net} is too large for an exemption (at most /{engine.MIN_PREFIXLEN[net.version]})")
+    return str(net)
+
+
+@api.post("/exemptions")
+def add_exemption(e: Exemption, user: str = Depends(require_user)):
+    value = _exemption_value(e)
     with db.tx() as c:
         c.execute("INSERT OR REPLACE INTO exemptions VALUES(?,?,?)", (e.kind, value, e.note))
         db.bump_rev(c)
@@ -476,8 +542,15 @@ def delete_exemption(kind: str, value: str, user: str = Depends(require_user)):
 
 
 class Watch(BaseModel):
-    ip: str
+    ip: str = Field(max_length=64)
     note: str = Field("", max_length=300)
+
+
+def _watch_value(w: Watch) -> str:
+    try:
+        return str(ipaddress.ip_address(w.ip.strip()))
+    except ValueError:
+        raise HTTPException(422, f"Not a valid IP: {w.ip}")
 
 
 @api.get("/watch")
@@ -487,10 +560,7 @@ def list_watch():
 
 @api.post("/watch")
 def add_watch(w: Watch, user: str = Depends(require_user)):
-    try:
-        ip = str(ipaddress.ip_address(w.ip.strip()))
-    except ValueError:
-        raise HTTPException(422, f"Not a valid IP: {w.ip}")
+    ip = _watch_value(w)
     with db.tx() as c:
         c.execute("INSERT OR REPLACE INTO watch_ips(ip,note) VALUES(?,?)", (ip, w.note))
     db.audit(user, "watch.add", {"ip": ip})
@@ -589,10 +659,6 @@ class Settings(BaseModel):
     decision_hours: int = Field(ge=24, le=24 * 365 * 3)
     include_ipv6: bool
     sanity_percent: int = Field(ge=5, le=100)
-    notify_url: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
-    notify_format: Literal["ntfy", "gotify", "webhook"]
-    notify_token: str | None = Field(None, max_length=256, pattern=r"^[\x21-\x7e]*$")  # None = keep, "" = remove
-    public_url: str | None = Field(None, max_length=200, pattern=r"^https?://[^\s/?#@]+$")  # address of this UI
     spamhaus_asndrop: Literal["ban", "captcha"] | None
     trusted_proxies: list[str]
     auth_user_header: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
@@ -610,13 +676,6 @@ class Settings(BaseModel):
 
 @api.put("/settings")
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
-    if s.notify_url and s.notify_url == notify.mask(db.get("notify_url")):
-        s.notify_url = db.get("notify_url")  # unchanged masked value from the form: keep the secret
-    if s.notify_token is None:
-        # keep the stored token – but never send it to a different server than it was entered for
-        s.notify_token = db.get("notify_token") if notify.same_host(s.notify_url, db.get("notify_url")) else ""
-    if s.public_url is None:
-        s.public_url = db.get("public_url")
     if s.decision_hours < s.interval_hours * 2:
         raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
@@ -629,19 +688,64 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
             db.put(k, v, c)
         if affects:
             db.bump_rev(c)
-    db.audit(user, "settings.put", s.model_dump(exclude={"notify_token"})
-             | {"notify_url": notify.mask(s.notify_url), "notify_token_set": bool(s.notify_token)})
+    db.audit(user, "settings.put", s.model_dump())
     return {"ok": True}
 
 
+class NotifyCfg(BaseModel):
+    notify_url: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
+    notify_format: Literal["ntfy", "gotify", "webhook"] = "ntfy"
+    notify_token: str | None = Field(None, max_length=256, pattern=r"^[\x21-\x7e]*$")  # None = keep, "" = remove
+    public_url: str | None = Field(None, max_length=200,  # address of this UI (browser's location.origin)
+                                  pattern=r"^https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?$")
+
+
+def _notify_values(c: NotifyCfg):
+    """Form values -> (url, format, token, public_url); the masked URL and an empty token field mean 'unchanged'."""
+    stored_url = db.get("notify_url")
+    url = stored_url if c.notify_url and c.notify_url == notify.mask(stored_url) else c.notify_url
+    token = c.notify_token
+    if token is None:
+        # keep the stored token – but never send it to a different server than it was entered for
+        token = db.get("notify_token") if notify.same_host(url, stored_url) else ""
+    return url, c.notify_format, token, c.public_url or db.get("public_url")
+
+
+_notify_tests: list[float] = []
+_notify_tests_lock = threading.Lock()
+
+
 @api.post("/notify/test")
-def notify_test():
-    if not db.get("notify_url"):
-        raise HTTPException(400, "No notification URL saved")
+def notify_test(c: NotifyCfg):
+    with _notify_tests_lock:  # at most 10 test notifications per minute
+        now = time.time()
+        _notify_tests[:] = [t for t in _notify_tests if now - t < 60]
+        if len(_notify_tests) >= 10:
+            raise HTTPException(429, "Too many test notifications, please wait a minute")
+        _notify_tests.append(now)
+    url, fmt, token, base = _notify_values(c)
+    if not url:
+        raise HTTPException(422, "Enter a notification URL first")
     try:
-        notify.send("asn-blocker: test", "Notifications are working. Tap to open asn-blocker.", "info", raise_errors=True)
+        notify.send("asn-blocker: test", "Notifications are working. Tap to open asn-blocker.", "info",
+                    raise_errors=True, cfg=(url, fmt, token, base))
     except notify.NotifyError as e:
         raise HTTPException(502, str(e))
+    notify.mark_tested(url, fmt, token, base)
+    return {"ok": True}
+
+
+@api.put("/notify")
+def put_notify(c: NotifyCfg, user: str = Depends(require_user)):
+    url, fmt, token, base = _notify_values(c)
+    if url and not notify.was_tested(url, fmt, token, base):
+        raise HTTPException(409, "Send a successful test notification with these settings first – nothing was saved")
+    with db.tx() as cur:
+        db.put("notify_url", url, cur)
+        db.put("notify_format", fmt, cur)
+        db.put("notify_token", token if url else "", cur)
+        db.put("public_url", base, cur)
+    db.audit(user, "notify.put", {"url": notify.mask(url), "format": fmt, "token_set": bool(token and url)})
     return {"ok": True}
 
 
@@ -660,6 +764,11 @@ def put_crowdsec(cfg: CrowdSecCfg, user: str = Depends(require_user)):
     password = cfg.password or (db.get("lapi_password") if same else "")
     if cfg.mode == "lapi" and not password:
         raise HTTPException(422, "Enter the machine password (required when URL or machine ID change)")
+    if cfg.mode == "lapi":
+        try:
+            notify.check_target(cfg.lapi_url)
+        except notify.NotifyError as e:
+            raise HTTPException(422, str(e).replace("notification target", "LAPI address"))
     try:
         msg = (crowdsec.Lapi(cfg.lapi_url, cfg.machine_id, password) if cfg.mode == "lapi"
                else crowdsec.DockerCli(cfg.container)).test()
@@ -682,7 +791,7 @@ class Cleanup(BaseModel):
 @api.post("/crowdsec/cleanup")
 def cleanup(body: Cleanup, user: str = Depends(require_user)):
     """Remove decisions that other tools or scripts added via cscli, selected by their reason (scenario)."""
-    if body.reason in engine.REASONS.values():
+    if body.reason.strip().casefold() in {r.casefold() for r in engine.REASONS.values()}:
         raise HTTPException(422, "Decisions owned by asn-blocker are managed through runs")
     try:
         n = crowdsec.backend().delete_scenario(body.reason)
@@ -760,28 +869,40 @@ def export():
 
 class ImportData(BaseModel):
     version: Literal[1]
-    asns: list[AsnRule] = []
-    vpn: list[dict] = []
+    asns: list[AsnRule] = Field([], max_length=5000)
+    vpn: list[dict] = Field([], max_length=5000)
     vpn_modes: dict[str, Literal["exact", "net"]] | None = None
-    exemptions: list[Exemption] = []
-    watch: list[Watch] = []
+    exemptions: list[Exemption] = Field([], max_length=5000)
+    watch: list[Watch] = Field([], max_length=1000)
 
 
 @api.post("/import")
-def import_cfg(data: ImportData, user: str = Depends(require_user)):
-    put_asns(data.asns, user)
-    for e in data.exemptions:
-        add_exemption(e, user)
-    for w in data.watch:
-        add_watch(w, user)
+def import_cfg(data: ImportData, request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
+    """Everything is validated first and written in one transaction – an invalid entry changes nothing."""
+    blocked = sorted({r.asn for r in data.asns} & selfprotect.protected_asns())
+    if blocked:
+        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
+                            + " is protected and cannot be blocked")
+    _guard_own_asn([r.asn for r in data.asns], request, confirm_own)
+    exemptions = [(e.kind, _exemption_value(e), e.note) for e in data.exemptions]
+    watch = [(_watch_value(w), w.note) for w in data.watch]
+    vpn = [(v["provider"], v["country"]) for v in data.vpn
+           if v.get("provider") in sources.PROVIDERS and re.fullmatch(r"[A-Z]{2}", str(v.get("country", "")))]
+    now = time.time()
     with db.tx() as c:
-        for v in data.vpn:
-            if v.get("provider") in sources.PROVIDERS and re.fullmatch(r"[A-Z]{2}", str(v.get("country", ""))):
-                c.execute("INSERT OR IGNORE INTO vpn_rules VALUES(?,?)", (v["provider"], v["country"]))
+        for r in data.asns:
+            c.execute("INSERT INTO asn_rules(asn,name,action,note,updated_at) VALUES(?,?,?,?,?) "
+                      "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, "
+                      "note=excluded.note, updated_at=excluded.updated_at",
+                      (r.asn, r.name or sources.asn_name(r.asn), r.action, r.note, now))
+        c.executemany("INSERT OR REPLACE INTO exemptions VALUES(?,?,?)", exemptions)
+        c.executemany("INSERT OR REPLACE INTO watch_ips(ip,note) VALUES(?,?)", watch)
+        c.executemany("INSERT OR IGNORE INTO vpn_rules VALUES(?,?)", vpn)
         if data.vpn_modes:
             db.put("vpn_modes", {k: v for k, v in data.vpn_modes.items() if k in sources.PROVIDERS}, c)
         db.bump_rev(c)
-    db.audit(user, "import", {"asns": len(data.asns)})
+    db.audit(user, "import", {"asns": len(data.asns), "exemptions": len(exemptions), "watch": len(watch),
+                              "vpn": len(vpn), "confirmed_own_network": confirm_own})
     return {"ok": True}
 
 
