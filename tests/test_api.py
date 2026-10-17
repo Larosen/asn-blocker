@@ -356,27 +356,27 @@ def test_search_by_ip_returns_its_asn(client, monkeypatch):
     from app import sources
     setup_local(client)
     calls = []
-    monkeypatch.setattr(sources, "ip_info", lambda ip: calls.append(ip) or {"asns": [8075], "prefix": "40.48.0.0/12"})
+    monkeypatch.setattr(sources, "ip_info", lambda ip: calls.append(ip) or {"asns": [8075], "prefix": "8.8.4.0/24"})
     with db.tx() as c:
         c.execute("INSERT INTO asn_names VALUES(8075,'Microsoft Corporation','Content','US')")
-    r = client.get("/api/asn/search", params={"q": " 40.51.166.16 "}).json()
+    r = client.get("/api/asn/search", params={"q": " 8.8.4.4 "}).json()
     assert r == [{"asn": 8075, "name": "Microsoft Corporation", "class": "Content", "cc": "US", "rule": None,
-                  "via": {"ip": "40.51.166.16", "prefix": "40.48.0.0/12"}}]
+                  "via": {"ip": "8.8.4.4", "prefix": "8.8.4.0/24"}}]
     assert client.get("/api/asn/search", params={"q": "2a01:4f8::1"}).status_code == 200
     for private in ("10.0.0.1", "127.0.0.1", "fd00::1"):
         assert client.get("/api/asn/search", params={"q": private}).status_code == 422
-    assert calls == ["40.51.166.16", "2a01:4f8::1"]          # name searches never hit RIPE for IPs
-    assert client.get("/api/asn/search", params={"q": "40.51.166"}).status_code == 200   # partial: normal search
-    assert calls == ["40.51.166.16", "2a01:4f8::1"]
+    assert calls == ["8.8.4.4", "2a01:4f8::1"]          # name searches never hit RIPE for IPs
+    assert client.get("/api/asn/search", params={"q": "8.8.4"}).status_code == 200   # partial: normal search
+    assert calls == ["8.8.4.4", "2a01:4f8::1"]
 
 
 def test_search_by_unrouted_ip_explains(client, monkeypatch):
     from app import sources
     setup_local(client)
     monkeypatch.setattr(sources, "ip_info", lambda ip: {"asns": [], "prefix": ""})
-    monkeypatch.setattr(sources, "ip_holder", lambda ip: "Eli Lilly and Company (ELILIL-Z)")
-    r = client.get("/api/asn/search", params={"q": "40.51.166.16"}).json()
-    assert r == [{"asn": None, "rule": None, "via": {"ip": "40.51.166.16", "prefix": None, "holder": "Eli Lilly and Company (ELILIL-Z)"}}]
+    monkeypatch.setattr(sources, "ip_holder", lambda ip: "Example Org (EXAMPLE-1)")
+    r = client.get("/api/asn/search", params={"q": "8.8.4.4"}).json()
+    assert r == [{"asn": None, "rule": None, "via": {"ip": "8.8.4.4", "prefix": None, "holder": "Example Org (EXAMPLE-1)"}}]
 
 
 def test_busy_hashing_does_not_use_up_attempts(client):

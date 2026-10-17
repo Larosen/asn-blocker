@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 
 @asynccontextmanager

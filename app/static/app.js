@@ -338,7 +338,7 @@ async function putRules(path, body, method = "PUT") {
 
 async function viewAsns(el) {
   el.innerHTML = `<div class="section"><div class="search" id="search">
-      <input type="search" id="q" placeholder="${t("Search ASN – number, name or an IP, e.g. hetzner, AS16509, 40.51.166.16")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
+      <input type="search" id="q" placeholder="${t("Search ASN – number, name or an IP, e.g. hetzner, AS16509, 8.8.8.8")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
       <div class="suggest box" id="suggest" hidden></div></div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Rules")}</h2><p class="small muted">${t("New rules take effect after “Apply”.")}</p></div>
       <div class="row"><input type="search" id="filter" placeholder="${t("Filter")}" aria-label="${t("Filter rules")}"><button class="btn" id="suggest-btn">${t("Suggestions")}</button><button class="btn" id="paste">${t("Paste list")}</button></div></div>
