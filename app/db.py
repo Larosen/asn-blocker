@@ -116,6 +116,8 @@ DEFAULTS = {
     "sanity_percent": 30,
     "notify_url": "",
     "notify_format": "ntfy",         # 'ntfy' | 'gotify' | 'webhook'
+    "notify_token": "",              # optional access token, sent as header (never returned to the browser)
+    "public_url": None,              # address of the web UI, for links in notifications
     "spamhaus_asndrop": None,        # None = off, otherwise 'ban' | 'captcha'
     "config_rev": 0,
     "applied_rev": 0,

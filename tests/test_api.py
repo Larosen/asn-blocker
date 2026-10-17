@@ -220,3 +220,65 @@ def test_input_bounds(client):
     assert client.post("/api/exemptions", headers=H, json={"kind": "asn", "value": "AS13335"}).json()["value"] == "13335"
     assert client.get("/api/audit?limit=-1").status_code == 422
     assert client.get("/api/runs?limit=-1").status_code == 422
+
+
+def _settings_body(client, **over):
+    s = client.get("/api/settings").json()
+    body = {k: s[k] for k in ("interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
+                              "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header")}
+    return body | over
+
+
+def test_notify_token_is_write_only_and_bound_to_its_server(client):
+    setup_local(client)
+    body = _settings_body(client, notify_url="https://ntfy.example/alerts", notify_token="tk_secret123",
+                          public_url="https://asnb.example")
+    assert client.put("/api/settings", headers=H, json=body).status_code == 200
+    s = client.get("/api/settings").json()
+    assert s["notify_token_set"] and "tk_secret123" not in client.get("/api/settings").text
+    assert "tk_secret123" not in client.get("/api/audit").text
+    # form sent again unchanged (masked URL, empty token field) -> token kept
+    assert client.put("/api/settings", headers=H, json=_settings_body(client)).status_code == 200
+    assert db.get("notify_token") == "tk_secret123" and db.get("public_url") == "https://asnb.example"
+    # different server without a new token -> token dropped, never sent elsewhere
+    assert client.put("/api/settings", headers=H, json=_settings_body(client, notify_url="https://evil.example/x")).status_code == 200
+    assert db.get("notify_token") == ""
+    for bad in ("tk with space", "tk\nInjected: 1"):
+        assert client.put("/api/settings", headers=H, json=_settings_body(client, notify_token=bad)).status_code == 422
+
+
+def test_ntfy_request_and_test_errors(client, monkeypatch):
+    from app import notify
+    setup_local(client)
+    sent, status = [], [200]
+
+    class R:
+        def __init__(self):
+            self.status_code = status[0]
+
+    def post(url, **kw):
+        sent.append((url, kw))
+        return R()
+
+    monkeypatch.setattr(notify.httpx, "post", post)
+    db.put("notify_url", "https://ntfy.example/alerts")
+    db.put("notify_format", "ntfy")
+    db.put("notify_token", "tk_abc")
+    db.put("public_url", "https://asnb.example")
+    notify.send("asn-blocker: run failed", "boom", "error", run_id=7)
+    url, kw = sent[-1]
+    h = kw["headers"]
+    assert url == "https://ntfy.example/alerts" and kw["content"] == b"boom"
+    assert h["Authorization"] == "Bearer tk_abc" and h["Priority"] == "high" and h["Click"] == "https://asnb.example/#/runs/7"
+    assert h["Title"] == "asn-blocker: run failed" and "rotating_light" in h["Tags"]
+    assert client.post("/api/notify/test", headers=H).status_code == 200
+    status[0] = 403
+    r = client.post("/api/notify/test", headers=H)
+    assert r.status_code == 502 and "403" in r.json()["detail"] and "token" in r.json()["detail"]
+    notify.send("x", "y")   # background sends never raise
+    db.put("notify_format", "gotify")
+    status[0] = 200
+    notify.send("t", "m", "warning", run_id=3)
+    url, kw = sent[-1]
+    assert kw["headers"]["X-Gotify-Key"] == "tk_abc" and kw["json"]["priority"] == 6
+    assert kw["json"]["extras"]["client::notification"]["click"]["url"] == "https://asnb.example/#/runs/3"

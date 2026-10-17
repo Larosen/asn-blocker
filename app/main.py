@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 
 
 @asynccontextmanager
@@ -577,7 +577,8 @@ PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_p
 @api.get("/settings")
 def get_settings():
     return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password")),
-                                                      "notify_url": notify.mask(db.get("notify_url"))}
+                                                      "notify_url": notify.mask(db.get("notify_url")),
+                                                      "notify_token_set": bool(db.get("notify_token"))}
 
 
 class Settings(BaseModel):
@@ -587,6 +588,8 @@ class Settings(BaseModel):
     sanity_percent: int = Field(ge=5, le=100)
     notify_url: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
     notify_format: Literal["ntfy", "gotify", "webhook"]
+    notify_token: str | None = Field(None, max_length=256, pattern=r"^[\x21-\x7e]*$")  # None = keep, "" = remove
+    public_url: str | None = Field(None, max_length=200, pattern=r"^https?://[^\s/?#@]+$")  # address of this UI
     spamhaus_asndrop: Literal["ban", "captcha"] | None
     trusted_proxies: list[str]
     auth_user_header: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
@@ -606,6 +609,11 @@ class Settings(BaseModel):
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
     if s.notify_url and s.notify_url == notify.mask(db.get("notify_url")):
         s.notify_url = db.get("notify_url")  # unchanged masked value from the form: keep the secret
+    if s.notify_token is None:
+        # keep the stored token – but never send it to a different server than it was entered for
+        s.notify_token = db.get("notify_token") if notify.same_host(s.notify_url, db.get("notify_url")) else ""
+    if s.public_url is None:
+        s.public_url = db.get("public_url")
     if s.decision_hours < s.interval_hours * 2:
         raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
@@ -618,7 +626,8 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
             db.put(k, v, c)
         if affects:
             db.bump_rev(c)
-    db.audit(user, "settings.put", s.model_dump() | {"notify_url": notify.mask(s.notify_url)})
+    db.audit(user, "settings.put", s.model_dump(exclude={"notify_token"})
+             | {"notify_url": notify.mask(s.notify_url), "notify_token_set": bool(s.notify_token)})
     return {"ok": True}
 
 
@@ -626,7 +635,10 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
 def notify_test():
     if not db.get("notify_url"):
         raise HTTPException(400, "No notification URL saved")
-    notify.send("asn-blocker: Test", "Notifications are working.", "info")
+    try:
+        notify.send("asn-blocker: test", "Notifications are working. Tap to open asn-blocker.", "info", raise_errors=True)
+    except notify.NotifyError as e:
+        raise HTTPException(502, str(e))
     return {"ok": True}
 
 

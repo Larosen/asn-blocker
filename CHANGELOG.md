@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 (2026-10-17)
+- Notifications: optional access token, sent as `Authorization: Bearer` (ntfy, webhook) or `X-Gotify-Key` (Gotify);
+  write-only and discarded when the URL points to a different server
+- Notifications link to the affected run; priorities and tags by severity; clearer messages
+- **Test notification** reports the server's answer (e.g. HTTP 401/403) instead of always "sent"
+
 ## 0.5.3 (2026-10-17)
 - Active SSH sessions are now also detected via systemd-logind (`/run/systemd/sessions`), for distributions that no
   longer have a utmp file (e.g. Ubuntu 26.04). The compose file mounts it by default; utmp remains supported.
