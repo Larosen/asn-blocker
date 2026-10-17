@@ -11,7 +11,7 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
 - **Web UI** to search ASNs by number or name and choose *Block* or *Captcha* per ASN
 - **Automatic refresh** of the ranges (every 48 h by default), with a preview of every change
 - **Exemptions** for individual IPs/networks, whole ASNs, and the server locations of VPN providers
-  (25 providers, including NordVPN, Proton VPN, Mullvad, Surfshark, ExpressVPN, PureVPN, CyberGhost, Windscribe and
+  (20 providers, including NordVPN, Proton VPN, Mullvad, Surfshark, ExpressVPN, PureVPN, CyberGhost, Windscribe and
   Private Internet Access) – so users on those VPNs are not blocked
 - **Lockout protection** for your own connection and active SSH sessions
 - **One container**, no Docker socket, no environment variables; everything is configured in the UI

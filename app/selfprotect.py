@@ -8,6 +8,7 @@
 """
 import ipaddress
 import os
+import re
 import struct
 import time
 from pathlib import Path
@@ -75,7 +76,7 @@ def _logind_sessions(directory: Path):
         ip = _global_ip(kv.get("REMOTE_HOST", ""))
         if not ip or kv.get("STATE") == "closing":
             continue
-        since = int(kv["REALTIME"]) // 1_000_000 if kv.get("REALTIME", "").isdigit() else 0
+        since = int(kv["REALTIME"]) // 1_000_000 if re.fullmatch(r"[0-9]{1,20}", kv.get("REALTIME", "")) else 0
         out.append({"ip": ip, "user": kv.get("USER", ""), "line": kv.get("TTY") or f"session {f.name}", "since": since})
     return out
 

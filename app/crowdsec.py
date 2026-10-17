@@ -155,10 +155,12 @@ class DockerCli:
             tar.addfile(info, io.BytesIO(data))
         if not self.c.put_archive("/tmp", buf.getvalue()):
             raise CrowdSecError("Copying into the CrowdSec container failed")
-        self._exec("cscli", "decisions", "import", "-i", f"/tmp/{name}", "--format", "values",
-                   "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
-                   "--batch", str(BATCH))
-        self.c.exec_run(["rm", "-f", f"/tmp/{name}"])
+        try:
+            self._exec("cscli", "decisions", "import", "-i", f"/tmp/{name}", "--format", "values",
+                       "--scope", "range", "--type", typ, "--duration", f"{int(duration_s)}s", "-R", reason,
+                       "--batch", str(BATCH))
+        finally:
+            self.c.exec_run(["rm", "-f", f"/tmp/{name}"])
 
     def delete_ids(self, ids):
         for i in ids:

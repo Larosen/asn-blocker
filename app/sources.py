@@ -81,7 +81,7 @@ def refresh_asn_names():
     rows = []
     for r in csv.DictReader(io.StringIO(text)):
         n = str(r.get("asn", "")).upper().removeprefix("AS")
-        if n.isdigit():
+        if re.fullmatch(r"[0-9]{1,10}", n) and int(n) < 2**32:
             rows.append((int(n), r.get("name") or "", r.get("class") or "", r.get("cc") or ""))
     if len(rows) < 10000:
         raise SourceError(f"bgp.tools asns.csv implausible ({len(rows)} rows)")
@@ -115,7 +115,7 @@ def search_asn(query, limit=25):
         if cat.get("category") == "ASNs":
             for s in cat.get("suggestions", []):
                 v = str(s.get("value", "")).upper().removeprefix("AS")
-                if v.isdigit():
+                if re.fullmatch(r"[0-9]{1,10}", v) and 0 < int(v) < 2**32:
                     out.append({"asn": int(v), "name": s.get("description") or s.get("label") or "", "class": "", "cc": ""})
     return out[:limit]
 
@@ -157,7 +157,8 @@ def ip_info(ip):
     if hit is not None:
         return hit
     d = _ripe("network-info", ip, 20)
-    out = {"asns": [int(a) for a in d.get("asns", []) if str(a).isdigit()], "prefix": d.get("prefix")}
+    out = {"asns": [int(a) for a in d.get("asns") or [] if re.fullmatch(r"[0-9]{1,10}", str(a)) and 0 < int(a) < 2**32],
+           "prefix": str(d.get("prefix") or "")[:64]}
     db.cache_put(key, out)
     return out
 

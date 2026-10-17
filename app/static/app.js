@@ -64,6 +64,8 @@ function dialog({ title, body, actions = [["cancel", t("Cancel")], ["ok", "OK", 
     dlg.onclose = () => resolve(dlg.returnValue === "cancel" ? "" : dlg.returnValue);
     dlg.returnValue = "";
     dlg.showModal();
+    // Never start on an action button: a stray Enter must not block a network or change a setting
+    $('.df button[value="cancel"]', dlg)?.focus();
     onOpen?.(dlg);
   });
 }
@@ -279,7 +281,7 @@ const checkIp = guard(async (ip) => {
   const m = /^(ban|captcha):(\d+)$/.exec(v || "");
   if (m) {
     const a = r.asns.find((x) => x.asn === +m[2]);
-    if (await addAsnRule(a, m[1])) { toast(t("AS{asn} added – takes effect with the next run", { asn: a.asn })); refreshOverview(); }
+    if (await addAsnRule({ ...a, via: { ip: r.ip } }, m[1])) { toast(t("AS{asn} added – takes effect with the next run", { asn: a.asn })); refreshOverview(); }
   }
 });
 

@@ -7,7 +7,7 @@
 - **Suggestions**: curated starting lists (large cloud platforms, VPS/dedicated hosting, ByteDance crawlers) and
   one-click Spamhaus ASN-DROP, each reviewed in the import preview
 - **Own network guard**: rules for the network the browser is connected from need an explicit confirmation
-- **14 more VPN providers** (25 in total): Proton VPN, Windscribe, IPVanish, PrivadoVPN, OVPN, PureVPN, ExpressVPN,
+- **14 more VPN providers** (20 in total): Proton VPN, Windscribe, IPVanish, PrivadoVPN, OVPN, PureVPN, ExpressVPN,
   CyberGhost, TorGuard, PrivateVPN, VyprVPN, FastestVPN, VPN Unlimited, VPNSecure
 - **Notifications**: own form; *Send test* checks the unsaved values and *Save* is only possible after a successful
   test (enforced by the server); a banner explains why saving was refused
