@@ -285,22 +285,26 @@ def run(kind, user, force=False):
                         c.execute("UPDATE watch_ips SET last_status=? WHERE ip=?", (s or "clear", ip))
                     db.put("applied_rev", rev, c)
                 if summary["watch_hits"]:
-                    notify.send("asn-blocker: watch IP affected", ", ".join(summary["watch_hits"]), "warning")
+                    notify.send("asn-blocker: watch IP affected",
+                                "Affected by the current rules: " + ", ".join(f"{ip} ({watch[ip]})" for ip in summary["watch_hits"]),
+                                "warning", run_id)
             status = "ok"
             log("Done")
         except Blocked as e:
             status = "blocked"
             log(f"STOPPED: {e}. CrowdSec unchanged – confirm in the UI to apply anyway.")
-            notify.send("asn-blocker: run stopped", str(e), "warning")
+            notify.send("asn-blocker: run stopped", f"{e}. CrowdSec is unchanged – review and confirm the run.",
+                        "warning", run_id)
         except (sources.SourceError, crowdsec.CrowdSecError) as e:
             log(f"ERROR: {e}")
             if kind == "apply":
-                notify.send("asn-blocker: run failed", str(e))
+                notify.send("asn-blocker: run failed", f"{e}. The active decisions stay until they expire.",
+                            "error", run_id)
         except Exception as e:  # noqa: BLE001
             log(f"ERROR (unexpected): {e!r}")
             log_.exception("Unexpected error in run %s", run_id)
             if kind == "apply":
-                notify.send("asn-blocker: run failed", repr(e))
+                notify.send("asn-blocker: run failed", f"Unexpected error: {e!r}", "error", run_id)
         with db.tx() as c:
             c.execute("UPDATE runs SET status=?, finished_at=?, summary=? WHERE id=?",
                       (status, time.time(), json.dumps(summary), run_id))

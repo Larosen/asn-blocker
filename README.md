@@ -209,8 +209,28 @@ A firewall bouncer applies bans to *all* traffic, including SSH. To keep you fro
 ### Watched IPs and notifications
 
 Add IPs that must stay reachable – your phone, monitoring, a customer – under **Exemptions → Watched IPs**. After
-every run they are checked; if one would be affected, you get a notification. Notifications (also for failed or
-stopped runs) are configured under **Settings → Notifications** for [ntfy](https://ntfy.sh), Gotify or a JSON webhook.
+every run they are checked; if one would be affected, you get a notification.
+
+Notifications are sent when a run fails, when the sanity check stops a run, and when a watched IP is affected.
+Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
+webhook, then use **Test notification** – it reports the server's answer, e.g. a rejected token. Each notification
+links to the run it is about.
+
+**ntfy with access control** (recommended for self-hosted ntfy with `auth-default-access: deny-all`):
+
+```bash
+docker exec ntfy ntfy user add asn-blocker                       # password is not needed afterwards
+docker exec ntfy ntfy access asn-blocker asn-blocker write-only   # user, topic, permission
+docker exec ntfy ntfy token add asn-blocker                      # prints tk_…
+docker exec ntfy ntfy access <your-user> asn-blocker read-only    # the account your phone subscribes with
+```
+
+In asn-blocker: URL `https://ntfy.example.com/asn-blocker`, format *ntfy*, access token `tk_…`. The token is sent as
+`Authorization: Bearer` header, is never shown again, and is discarded if the URL is changed to a different server.
+If ntfy runs on the same Docker network, the internal address (e.g. `http://ntfy:80/asn-blocker`) avoids the detour
+through the reverse proxy – an SSO-protected proxy route would reject the request.
+
+For **Gotify**, use `https://gotify.example.com/message` and the application token as access token.
 
 ### Spamhaus ASN-DROP
 

@@ -604,8 +604,12 @@ async function viewSettings(el) {
       <small>${t("Public list of known abuse networks, refreshed on every run.")}</small></label></div>
     <label class="check"><input type="checkbox" name="include_ipv6" ${s.include_ipv6 ? "checked" : ""}><span>${t("Also block IPv6 prefixes")}</span></label>
     <h3>${t("Notifications")}</h3>
-    <div class="grid2"><label class="field"><span>URL</span><input type="url" name="notify_url" class="mono" value="${esc(s.notify_url)}" placeholder="https://ntfy.sh/…"></label>
-    <label class="field"><span>${t("Format")}</span><select name="notify_format"><option value="ntfy">ntfy</option><option value="gotify">${t("Gotify (token in URL)")}</option><option value="webhook">${t("Webhook (JSON)")}</option></select></label></div>
+    <div class="grid2"><label class="field"><span>URL</span><input type="url" name="notify_url" class="mono" value="${esc(s.notify_url)}" placeholder="https://ntfy.example.com/asn-blocker">
+      <small>${t("ntfy: server and topic. Gotify: …/message. Webhook: any URL that accepts JSON.")}</small></label>
+    <label class="field"><span>${t("Format")}</span><select name="notify_format"><option value="ntfy">ntfy</option><option value="gotify">Gotify</option><option value="webhook">${t("Webhook (JSON)")}</option></select></label></div>
+    <div class="grid2"><label class="field"><span>${t("Access token (optional)")}</span><input type="password" name="notify_token" class="mono" autocomplete="off" placeholder="${s.notify_token_set ? t("saved – leave empty to keep") : "tk_…"}">
+      <small>${t("ntfy access token or Gotify app token. Sent as a header, never shown again. Required again if the server changes.")}</small></label>
+    ${s.notify_token_set ? `<label class="check mid"><input type="checkbox" name="notify_token_clear"><span>${t("Remove saved token")}</span></label>` : "<span></span>"}</div>
     <h3>${t("Access")}</h3>
     <div class="grid2"><label class="field"><span>${t("Trusted proxies")}</span><input type="text" name="trusted_proxies" class="mono" value="${esc((s.trusted_proxies || []).join(", "))}">
       <small>${s.auth_mode === "proxy" ? t("X-Forwarded-For and the user header are only accepted from here.") : t("X-Forwarded-For is only accepted from here.")}</small></label>
@@ -644,10 +648,11 @@ async function viewSettings(el) {
       interval_hours: +g.interval_hours.value, decision_hours: +g.decision_hours.value, sanity_percent: +g.sanity_percent.value,
       include_ipv6: g.include_ipv6.checked, spamhaus_asndrop: g.spamhaus_asndrop.value || null,
       notify_url: g.notify_url.value.trim(), notify_format: g.notify_format.value,
+      notify_token: g.notify_token_clear?.checked ? "" : g.notify_token.value.trim() || null, public_url: location.origin,
       trusted_proxies: g.trusted_proxies.value.split(",").map((x) => x.trim()).filter(Boolean), auth_user_header: g.auth_user_header.value.trim() } });
-    toast(t("Saved")); refreshOverview();
+    toast(t("Saved")); refreshOverview(); viewSettings(el);
   });
-  $("#ntest").onclick = guard(async () => { await api("/notify/test", { method: "POST" }); toast(t("Test sent")); });
+  $("#ntest").onclick = guard(async () => { await api("/notify/test", { method: "POST" }); toast(t("Test notification delivered")); });
   $("#pw")?.addEventListener("submit", guard(async (e) => {
     e.preventDefault();
     await api("/account/password", { method: "PUT", body: { current: e.target.cur.value, new: e.target.new.value } });
