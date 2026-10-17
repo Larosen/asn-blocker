@@ -11,7 +11,8 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
 - **Web UI** to search ASNs by number or name and choose *Block* or *Captcha* per ASN
 - **Automatic refresh** of the ranges (every 48 h by default), with a preview of every change
 - **Exemptions** for individual IPs/networks, whole ASNs, and the server locations of VPN providers
-  (NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN) – so users on those VPNs are not blocked
+  (25 providers, including NordVPN, Proton VPN, Mullvad, Surfshark, ExpressVPN, PureVPN, CyberGhost, Windscribe and
+  Private Internet Access) – so users on those VPNs are not blocked
 - **Lockout protection** for your own connection and active SSH sessions
 - **One container**, no Docker socket, no environment variables; everything is configured in the UI
 
@@ -161,8 +162,17 @@ Choose **Built-in login** in this case – the proxy mode can only be set up thr
 
 ### ASN rules
 
-Under **ASNs**, search by number (`14061`, `AS14061`) or by name (`digitalocean`) and set **Block** or **Captcha**.
-The search uses a local copy of the [bgp.tools](https://bgp.tools) ASN list, refreshed weekly.
+Under **ASNs**, search by number (`14061`, `AS14061`), by name (`digitalocean`) or by **IP address** and set **Block**
+or **Captcha**. An IP – for example from a CrowdSec alert – shows the network that announces it; if no network
+announces it, the search says so and names the registered holder. The name search uses a local copy of the
+[bgp.tools](https://bgp.tools) ASN list, refreshed weekly. The **Check IP** field at the top offers the same buttons.
+
+Not sure where to start? **Suggestions** offers curated lists (large cloud platforms, VPS and dedicated hosting,
+ByteDance crawlers) and Spamhaus ASN-DROP. Each list says what else it blocks, and every ASN is shown for review
+before anything is added.
+
+Adding a rule for the network you are currently connected from asks for an explicit confirmation – useful when you
+deliberately want to block, say, a hotel or office network.
 
 To add many at once, use **Paste list**: one ASN per line, optionally followed by a comment, which is kept as a note.
 Lines starting with `#` are skipped.
@@ -186,6 +196,11 @@ Exemptions are cut out of every blocked range.
   can be exempted instead; this is broader and may also exempt other servers at the same hosting provider.
   Note: some VPNs use different addresses for incoming and outgoing traffic. NordVPN's outgoing IPs are mostly in
   `AS207137`, which you can add as an exempt ASN.
+  Sources: the providers' own server lists for NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN,
+  Windscribe, IPVanish, PrivadoVPN and OVPN; Proton VPN's exit IPs from the daily
+  [ProtonVPN-IPs](https://github.com/tn3w/ProtonVPN-IPs) list; PureVPN, ExpressVPN, CyberGhost, TorGuard, PrivateVPN,
+  VyprVPN, FastestVPN, VPN Unlimited and VPNSecure from the [gluetun](https://github.com/qdm12/gluetun-servers)
+  project's server data (updated about monthly), as these providers publish no list of their own.
 
 ### Lockout protection
 
@@ -213,8 +228,8 @@ every run they are checked; if one would be affected, you get a notification.
 
 Notifications are sent when a run fails, when the sanity check stops a run, and when a watched IP is affected.
 Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
-webhook, then use **Test notification** – it reports the server's answer, e.g. a rejected token. Each notification
-links to the run it is about.
+webhook. **Send test** checks the values before they are saved and reports the server's answer, e.g. a rejected
+token; **Save** is only possible after a successful test. Each notification links to the run it is about.
 
 **ntfy with access control** (recommended for self-hosted ntfy with `auth-default-access: deny-all`):
 

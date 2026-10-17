@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 (2026-10-17)
+- **ASN search by IP**: enter an IP (e.g. from a CrowdSec alert) to see the network announcing it and block it or put
+  it behind a captcha; unrouted addresses are explained with their registered holder. The IP check dialog offers the
+  same buttons.
+- **Suggestions**: curated starting lists (large cloud platforms, VPS/dedicated hosting, ByteDance crawlers) and
+  one-click Spamhaus ASN-DROP, each reviewed in the import preview
+- **Own network guard**: rules for the network the browser is connected from need an explicit confirmation
+- **14 more VPN providers** (25 in total): Proton VPN, Windscribe, IPVanish, PrivadoVPN, OVPN, PureVPN, ExpressVPN,
+  CyberGhost, TorGuard, PrivateVPN, VyprVPN, FastestVPN, VPN Unlimited, VPNSecure
+- **Notifications**: own form; *Send test* checks the unsaved values and *Save* is only possible after a successful
+  test (enforced by the server); a banner explains why saving was refused
+
 ## 0.5.5 (2026-10-17)
 - The web UI's files are served with `Cache-Control: no-cache`, so browsers revalidate them and show a new version
   right after an update instead of an outdated cached interface
