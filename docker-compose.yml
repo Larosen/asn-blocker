@@ -7,7 +7,9 @@ services:
     volumes:
       - asn-blocker-data:/data
       # Self-protection: detect the host's active SSH sessions (read-only)
-      - /var/run/utmp:/host/utmp:ro
+      - /run/systemd/sessions:/host/sessions:ro
+      # Hosts without systemd-logind: use utmp instead
+      # - /var/run/utmp:/host/utmp:ro
     networks:
       - crowdsec      # network in which the CrowdSec container is reachable
       # - proxy       # a network your reverse proxy can reach, see README "Accessing the web UI"

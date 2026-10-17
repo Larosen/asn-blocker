@@ -74,7 +74,7 @@ services:
     restart: unless-stopped
     volumes:
       - asn-blocker-data:/data
-      - /var/run/utmp:/host/utmp:ro        # optional: protect active SSH sessions, see "Lockout protection"
+      - /run/systemd/sessions:/host/sessions:ro   # optional: protect active SSH sessions, see "Lockout protection"
     networks:
       - crowdsec                           # a network in which the CrowdSec container is reachable
     # Hardening – the app needs none of the dropped privileges
@@ -191,8 +191,11 @@ Exemptions are cut out of every blocked range.
 
 A firewall bouncer applies bans to *all* traffic, including SSH. To keep you from locking yourself out:
 
-- **Active SSH sessions** are detected automatically when the host's `/var/run/utmp` is mounted (see the compose file).
-  Their IPs are never blocked.
+- **Active SSH sessions** are detected automatically when the host's session registry is mounted read-only:
+  `/run/systemd/sessions:/host/sessions:ro` on any system with systemd (as in the compose file), or
+  `/var/run/utmp:/host/utmp:ro` on systems without systemd-logind. Some current distributions no
+  longer have a utmp file. The IPs of these sessions are never blocked. **Exemptions → Self-protection** shows whether
+  sessions are detected.
 - **Protected IPs and ASNs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed
   run. Rules for protected ASNs are rejected. Home connections usually change their IP, so protect the **ASN** of
   your internet provider. From an SSH session, one command does this:
@@ -296,6 +299,7 @@ decision duration. Then delete the machine in CrowdSec:
 | "LAPI login failed" | Wrong machine ID or password; create new credentials with `cscli machines add` |
 | Run stopped by the sanity check | Review the planned changes under **Runs** and confirm with **Apply anyway** if they are expected |
 | Captcha has no effect | Your bouncer cannot show captchas (firewall bouncers can't) |
+| "Active SSH sessions: not available" | The session registry is not mounted – add `/run/systemd/sessions:/host/sessions:ro` and recreate the container with `docker compose up -d` |
 | Surfshark countries fail | Surfshark only publishes hostnames; the container needs working DNS |
 | Locked out via SSH | From the host console: `docker exec asn-blocker python -m app.cli protect <your-ip>`, then **Apply** – or remove the decision with `cscli decisions delete --ip <your-ip>` |
 

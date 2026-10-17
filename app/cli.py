@@ -91,7 +91,7 @@ def check_sources() -> bool:
 def protect(args) -> bool:
     if "--list" in args:
         sessions, status = selfprotect.ssh_sessions()
-        print(f"SSH sessions (utmp: {status}):")
+        print(f"SSH sessions ({status}):")
         for s in sessions:
             print(f"  {s['ip']:<40} {s['user']}@{s['line']}")
         print("Protected:")
