@@ -4,7 +4,9 @@ An optional access token is stored separately from the URL and sent as a header 
 `Authorization: Bearer …`, Gotify: `X-Gotify-Key`). If the address of the web UI is known, notifications
 link to the run they are about.
 """
+import hashlib
 import logging
+import time
 
 import httpx
 
@@ -19,6 +21,27 @@ LEVELS = {"error": ("high", "rotating_light", 8), "warning": ("high", "warning",
 
 class NotifyError(RuntimeError):
     pass
+
+
+# Settings can only be saved after a successful test with exactly these values (fingerprint -> time of the test)
+_tested: dict[str, float] = {}
+TEST_VALID = 1800
+
+
+def _fingerprint(url, fmt, token):
+    return hashlib.sha256(f"{url}\n{fmt}\n{token}".encode()).hexdigest()
+
+
+def mark_tested(url, fmt, token):
+    now = time.time()
+    for k in [k for k, t in _tested.items() if now - t > TEST_VALID]:
+        del _tested[k]
+    _tested[_fingerprint(url, fmt, token)] = now
+
+
+def was_tested(url, fmt, token):
+    t = _tested.get(_fingerprint(url, fmt, token))
+    return t is not None and time.time() - t <= TEST_VALID
 
 
 def mask(url):
@@ -38,19 +61,22 @@ def same_host(a, b):
         return False
 
 
-def link(run_id=None):
-    base = db.get("public_url")
+def link(run_id=None, base=None):
     if not base:
         return None
     return f"{base}/#/runs/{run_id}" if run_id else f"{base}/#/overview"
 
 
-def send(title, message, level="error", run_id=None, raise_errors=False):
-    url, fmt, token = db.get("notify_url"), db.get("notify_format"), db.get("notify_token")
+def send(title, message, level="error", run_id=None, raise_errors=False, cfg=None):
+    """cfg: (url, format, token, public_url) to use instead of the saved settings – for testing unsaved values."""
+    if cfg:
+        url, fmt, token, base = cfg
+    else:
+        url, fmt, token, base = db.get("notify_url"), db.get("notify_format"), db.get("notify_token"), db.get("public_url")
     if not url:
         return
     prio, tags, gotify_prio = LEVELS.get(level, LEVELS["error"])
-    click = link(run_id)
+    click = link(run_id, base)
     headers = {"User-Agent": USER_AGENT}
     try:
         if fmt == "ntfy":

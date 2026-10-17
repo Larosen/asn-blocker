@@ -232,3 +232,5 @@ h3.inline-h { margin: 0; }
 .check-inline { display: inline-flex; gap: 6px; align-items: center; }
 .box > .pad-sm + table, .box > table + .pad-sm { border-top: 1px solid var(--line); }
 .check.mid { align-self: center; margin-bottom: 12px; }
+.btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.sugg { margin-top: 10px; } .sugg h3 { margin: 0; } .sugg p { margin: 6px 0; } .sugg .note { margin: 6px 0; }

@@ -199,19 +199,19 @@ def test_lapi_password_not_reused_for_new_url(client, monkeypatch):
         assert client.put("/api/crowdsec", headers=H, json={**cfg, "lapi_url": bad}).status_code == 422
 
 
-def test_notify_url_is_masked_and_kept(client):
+def test_notify_url_is_masked_and_kept(client, monkeypatch):
+    from app import notify
     setup_local(client)
-    s = client.get("/api/settings").json()
-    s["notify_url"] = "https://ntfy.example/secret-topic?auth=TOKEN"
-    body = {k: s[k] for k in ("interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
-                              "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header")}
-    assert client.put("/api/settings", headers=H, json=body).status_code == 200
+    monkeypatch.setattr(notify, "send", lambda *a, **k: None)
+    cfg = {"notify_url": "https://ntfy.example/secret-topic?auth=TOKEN", "notify_format": "ntfy"}
+    assert client.post("/api/notify/test", headers=H, json=cfg).status_code == 200
+    assert client.put("/api/notify", headers=H, json=cfg).status_code == 200
     shown = client.get("/api/settings").json()["notify_url"]
     assert shown == "https://ntfy.example/***"
-    assert client.put("/api/settings", headers=H, json={**body, "notify_url": shown}).status_code == 200
+    assert client.post("/api/notify/test", headers=H, json={**cfg, "notify_url": shown}).status_code == 200
+    assert client.put("/api/notify", headers=H, json={**cfg, "notify_url": shown}).status_code == 200
     assert db.get("notify_url") == "https://ntfy.example/secret-topic?auth=TOKEN"
     assert "secret-topic" not in client.get("/api/audit").text
-
 
 def test_input_bounds(client):
     setup_local(client)
@@ -222,29 +222,47 @@ def test_input_bounds(client):
     assert client.get("/api/runs?limit=-1").status_code == 422
 
 
-def _settings_body(client, **over):
-    s = client.get("/api/settings").json()
-    body = {k: s[k] for k in ("interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
-                              "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header")}
-    return body | over
-
-
-def test_notify_token_is_write_only_and_bound_to_its_server(client):
+def test_notify_requires_successful_test_before_save(client, monkeypatch):
+    from app import notify
     setup_local(client)
-    body = _settings_body(client, notify_url="https://ntfy.example/alerts", notify_token="tk_secret123",
-                          public_url="https://asnb.example")
-    assert client.put("/api/settings", headers=H, json=body).status_code == 200
+    ok = [True]
+
+    def fake_send(*a, cfg=None, **k):
+        if not ok[0]:
+            raise notify.NotifyError("ntfy server answered HTTP 403")
+        fake_send.last = cfg
+
+    monkeypatch.setattr(notify, "send", fake_send)
+    cfg = {"notify_url": "https://ntfy.example/alerts", "notify_format": "ntfy", "notify_token": "tk_secret123",
+           "public_url": "https://asnb.example"}
+    r = client.put("/api/notify", headers=H, json=cfg)
+    assert r.status_code == 409 and db.get("notify_url") == ""          # untested -> nothing saved
+    ok[0] = False
+    assert client.post("/api/notify/test", headers=H, json=cfg).status_code == 502
+    assert client.put("/api/notify", headers=H, json=cfg).status_code == 409  # failed test does not count
+    ok[0] = True
+    assert client.post("/api/notify/test", headers=H, json=cfg).status_code == 200
+    assert fake_send.last == ("https://ntfy.example/alerts", "ntfy", "tk_secret123", "https://asnb.example")
+    assert client.put("/api/notify", headers=H, json={**cfg, "notify_token": "tk_other"}).status_code == 409  # other values
+    assert client.put("/api/notify", headers=H, json=cfg).status_code == 200
     s = client.get("/api/settings").json()
     assert s["notify_token_set"] and "tk_secret123" not in client.get("/api/settings").text
     assert "tk_secret123" not in client.get("/api/audit").text
-    # form sent again unchanged (masked URL, empty token field) -> token kept
-    assert client.put("/api/settings", headers=H, json=_settings_body(client)).status_code == 200
+    # form sent again unchanged (masked URL, empty token field): test + save keep the token
+    same = {"notify_url": s["notify_url"], "notify_format": "ntfy"}
+    assert client.post("/api/notify/test", headers=H, json=same).status_code == 200
+    assert fake_send.last[2] == "tk_secret123"
+    assert client.put("/api/notify", headers=H, json=same).status_code == 200
     assert db.get("notify_token") == "tk_secret123" and db.get("public_url") == "https://asnb.example"
-    # different server without a new token -> token dropped, never sent elsewhere
-    assert client.put("/api/settings", headers=H, json=_settings_body(client, notify_url="https://evil.example/x")).status_code == 200
-    assert db.get("notify_token") == ""
+    # different server without a new token -> stored token is never sent there
+    other = {"notify_url": "https://evil.example/x", "notify_format": "ntfy"}
+    assert client.post("/api/notify/test", headers=H, json=other).status_code == 200
+    assert fake_send.last[2] == ""
+    # switching off needs no test
+    assert client.put("/api/notify", headers=H, json={"notify_url": "", "notify_format": "ntfy"}).status_code == 200
+    assert db.get("notify_url") == "" and db.get("notify_token") == ""
     for bad in ("tk with space", "tk\nInjected: 1"):
-        assert client.put("/api/settings", headers=H, json=_settings_body(client, notify_token=bad)).status_code == 422
+        assert client.post("/api/notify/test", headers=H, json={**cfg, "notify_token": bad}).status_code == 422
 
 
 def test_ntfy_request_and_test_errors(client, monkeypatch):
@@ -271,9 +289,9 @@ def test_ntfy_request_and_test_errors(client, monkeypatch):
     assert url == "https://ntfy.example/alerts" and kw["content"] == b"boom"
     assert h["Authorization"] == "Bearer tk_abc" and h["Priority"] == "high" and h["Click"] == "https://asnb.example/#/runs/7"
     assert h["Title"] == "asn-blocker: run failed" and "rotating_light" in h["Tags"]
-    assert client.post("/api/notify/test", headers=H).status_code == 200
+    assert client.post("/api/notify/test", headers=H, json={"notify_url": "https://ntfy.example/***"}).status_code == 200
     status[0] = 403
-    r = client.post("/api/notify/test", headers=H)
+    r = client.post("/api/notify/test", headers=H, json={"notify_url": "https://ntfy.example/***"})
     assert r.status_code == 502 and "403" in r.json()["detail"] and "token" in r.json()["detail"]
     notify.send("x", "y")   # background sends never raise
     db.put("notify_format", "gotify")
@@ -291,3 +309,44 @@ def test_ui_files_are_revalidated(client):
     etag = client.get("/static/app.js").headers["etag"]
     assert client.get("/static/app.js", headers={"If-None-Match": etag}).status_code == 304
     assert client.get("/api/session").headers["cache-control"] == "no-store"
+
+
+def test_blocking_own_network_needs_confirmation(client, monkeypatch):
+    from app import sources
+    db.put("auth_mode", "proxy")
+    db.put("auth_user_header", "Remote-User")
+    db.put("trusted_proxies", ["10.9.9.9/32"])
+    monkeypatch.setattr(auth, "peer_ip", lambda r: "10.9.9.9")
+    monkeypatch.setattr(sources, "ip_info", lambda ip: {"asns": [3320], "prefix": "84.128.0.0/10"})
+    hdr = {**H, "Remote-User": "alice", "X-Forwarded-For": "84.150.3.10"}
+    rules = [{"asn": 3320, "action": "ban"}, {"asn": 14061, "action": "ban"}]
+    r = client.put("/api/asns", headers=hdr, json=rules)
+    assert r.status_code == 409
+    d = r.json()["detail"]
+    assert d["code"] == "own_asn" and d["asns"] == [3320] and d["ip"] == "84.150.3.10"
+    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 0            # nothing saved
+    assert client.put("/api/asns", headers=hdr, json=rules[1:]).status_code == 200   # other networks: no question
+    assert client.put("/api/asns?confirm_own=1", headers=hdr, json=rules).status_code == 200
+    assert {r["asn"] for r in db.q("SELECT asn FROM asn_rules")} == {3320, 14061}
+    assert client.put("/api/asns", headers=hdr, json=[{"asn": 3320, "action": "captcha"}]).status_code == 200  # existing rule
+    r = client.post("/api/import", headers=hdr, json={"version": 1, "asns": [{"asn": 3320, "action": "ban"}]})
+    assert r.status_code == 200   # already present
+    with db.tx() as c:
+        c.execute("DELETE FROM asn_rules")
+    r = client.post("/api/import", headers=hdr, json={"version": 1, "asns": [{"asn": 3320, "action": "ban"}]})
+    assert r.status_code == 409
+
+
+def test_suggestions(client):
+    from app import selfprotect, suggestions
+    setup_local(client)
+    with db.tx() as c:
+        c.execute("INSERT INTO asn_rules(asn,name,action,updated_at) VALUES(14061,'DO','ban',0)")
+    selfprotect.add("asn", "24940", "test")
+    sg = client.get("/api/asns/suggestions").json()
+    assert [x["id"] for x in sg["lists"]] == [x["id"] for x in suggestions.LISTS]
+    vps = next(x for x in sg["lists"] if x["id"] == "vps")
+    flags = {a["asn"]: (a["present"], a["protected"]) for a in vps["asns"]}
+    assert flags[14061] == (True, False) and flags[24940] == (False, True)
+    asns = [a for x in suggestions.LISTS for a, _ in x["asns"]]
+    assert len(asns) == len(set(asns)) and all(0 < a < 2**32 for a in asns)

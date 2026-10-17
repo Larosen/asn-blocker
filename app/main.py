@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources
+from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources, suggestions
 
 logs.setup()
 log = logging.getLogger("asn_blocker")
@@ -313,14 +313,49 @@ class AsnRule(BaseModel):
     note: str = Field("", max_length=500)
 
 
+def _own_asns(request: Request) -> dict[int, str]:
+    """ASNs of the network the current browser request comes from ({asn: ip}); empty if unknown."""
+    ip = auth.client_ip(request)
+    try:
+        if not ipaddress.ip_address(ip).is_global:
+            return {}
+        return {a: ip for a in sources.ip_info(ip)["asns"]}
+    except (ValueError, sources.SourceError):
+        return {}
+
+
+def _guard_own_asn(asns, request: Request, confirmed: bool):
+    """Blocking the network you are connected from needs an explicit confirmation (e.g. a hotel or office network)."""
+    existing = {r["asn"] for r in db.q("SELECT asn FROM asn_rules")}
+    new = set(asns) - existing
+    own = _own_asns(request) if new else {}
+    hit = sorted(new & set(own))
+    if hit and not confirmed:
+        raise HTTPException(409, {"code": "own_asn", "asns": hit, "ip": own[hit[0]],
+                                  "message": f"AS{hit[0]} is the network you are connected from ({own[hit[0]]}). "
+                                             "Blocking it can lock you out of this page."})
+
+
+@api.get("/asns/suggestions")
+def asn_suggestions():
+    existing = {r["asn"] for r in db.q("SELECT asn FROM asn_rules")}
+    protected = selfprotect.protected_asns()
+    return {"spamhaus": db.get("spamhaus_asndrop"), "lists": [
+        {k: v for k, v in lst.items() if k != "asns"}
+        | {"asns": [{"asn": a, "name": sources.asn_name(a) or label, "note": label, "present": a in existing,
+                     "protected": a in protected} for a, label in lst["asns"]]}
+        for lst in suggestions.LISTS]}
+
+
 @api.put("/asns")
-def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
+def put_asns(rules: list[AsnRule], request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
     if len(rules) > 5000:
         raise HTTPException(422, "At most 5000 rules per request")
     blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
     if blocked:
         raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
                             + " is protected and cannot be blocked")
+    _guard_own_asn([r.asn for r in rules], request, confirm_own)
     now = time.time()
     with db.tx() as c:
         for r in rules:
@@ -329,7 +364,7 @@ def put_asns(rules: list[AsnRule], user: str = Depends(require_user)):
                       "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, "
                       "note=excluded.note, updated_at=excluded.updated_at", (r.asn, name, r.action, r.note, now))
         db.bump_rev(c)
-    db.audit(user, "asn.put", [r.model_dump() for r in rules])
+    db.audit(user, "asn.put", [r.model_dump() for r in rules] + ([{"confirmed_own_network": True}] if confirm_own else []))
     return {"ok": True}
 
 
@@ -589,10 +624,6 @@ class Settings(BaseModel):
     decision_hours: int = Field(ge=24, le=24 * 365 * 3)
     include_ipv6: bool
     sanity_percent: int = Field(ge=5, le=100)
-    notify_url: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
-    notify_format: Literal["ntfy", "gotify", "webhook"]
-    notify_token: str | None = Field(None, max_length=256, pattern=r"^[\x21-\x7e]*$")  # None = keep, "" = remove
-    public_url: str | None = Field(None, max_length=200, pattern=r"^https?://[^\s/?#@]+$")  # address of this UI
     spamhaus_asndrop: Literal["ban", "captcha"] | None
     trusted_proxies: list[str]
     auth_user_header: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
@@ -610,13 +641,6 @@ class Settings(BaseModel):
 
 @api.put("/settings")
 def put_settings(s: Settings, request: Request, user: str = Depends(require_user)):
-    if s.notify_url and s.notify_url == notify.mask(db.get("notify_url")):
-        s.notify_url = db.get("notify_url")  # unchanged masked value from the form: keep the secret
-    if s.notify_token is None:
-        # keep the stored token – but never send it to a different server than it was entered for
-        s.notify_token = db.get("notify_token") if notify.same_host(s.notify_url, db.get("notify_url")) else ""
-    if s.public_url is None:
-        s.public_url = db.get("public_url")
     if s.decision_hours < s.interval_hours * 2:
         raise HTTPException(422, "Decision duration must be at least twice the interval")
     if db.get("auth_mode") == "proxy":
@@ -629,19 +653,53 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
             db.put(k, v, c)
         if affects:
             db.bump_rev(c)
-    db.audit(user, "settings.put", s.model_dump(exclude={"notify_token"})
-             | {"notify_url": notify.mask(s.notify_url), "notify_token_set": bool(s.notify_token)})
+    db.audit(user, "settings.put", s.model_dump())
     return {"ok": True}
 
 
+class NotifyCfg(BaseModel):
+    notify_url: str = Field("", max_length=500, pattern=r"^(https?://\S+)?$")
+    notify_format: Literal["ntfy", "gotify", "webhook"] = "ntfy"
+    notify_token: str | None = Field(None, max_length=256, pattern=r"^[\x21-\x7e]*$")  # None = keep, "" = remove
+    public_url: str | None = Field(None, max_length=200, pattern=r"^https?://[^\s/?#@]+$")  # address of this UI
+
+
+def _notify_values(c: NotifyCfg):
+    """Form values -> (url, format, token, public_url); the masked URL and an empty token field mean 'unchanged'."""
+    stored_url = db.get("notify_url")
+    url = stored_url if c.notify_url and c.notify_url == notify.mask(stored_url) else c.notify_url
+    token = c.notify_token
+    if token is None:
+        # keep the stored token – but never send it to a different server than it was entered for
+        token = db.get("notify_token") if notify.same_host(url, stored_url) else ""
+    return url, c.notify_format, token, c.public_url or db.get("public_url")
+
+
 @api.post("/notify/test")
-def notify_test():
-    if not db.get("notify_url"):
-        raise HTTPException(400, "No notification URL saved")
+def notify_test(c: NotifyCfg):
+    url, fmt, token, base = _notify_values(c)
+    if not url:
+        raise HTTPException(422, "Enter a notification URL first")
     try:
-        notify.send("asn-blocker: test", "Notifications are working. Tap to open asn-blocker.", "info", raise_errors=True)
+        notify.send("asn-blocker: test", "Notifications are working. Tap to open asn-blocker.", "info",
+                    raise_errors=True, cfg=(url, fmt, token, base))
     except notify.NotifyError as e:
         raise HTTPException(502, str(e))
+    notify.mark_tested(url, fmt, token)
+    return {"ok": True}
+
+
+@api.put("/notify")
+def put_notify(c: NotifyCfg, user: str = Depends(require_user)):
+    url, fmt, token, base = _notify_values(c)
+    if url and not notify.was_tested(url, fmt, token):
+        raise HTTPException(409, "Send a successful test notification with these settings first – nothing was saved")
+    with db.tx() as cur:
+        db.put("notify_url", url, cur)
+        db.put("notify_format", fmt, cur)
+        db.put("notify_token", token if url else "", cur)
+        db.put("public_url", base, cur)
+    db.audit(user, "notify.put", {"url": notify.mask(url), "format": fmt, "token_set": bool(token and url)})
     return {"ok": True}
 
 
@@ -768,8 +826,8 @@ class ImportData(BaseModel):
 
 
 @api.post("/import")
-def import_cfg(data: ImportData, user: str = Depends(require_user)):
-    put_asns(data.asns, user)
+def import_cfg(data: ImportData, request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
+    put_asns(data.asns, request, confirm_own, user)
     for e in data.exemptions:
         add_exemption(e, user)
     for w in data.watch:
