@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-10-17)
+- README: screenshots of the overview, ASN search, suggestions, VPN exemptions and a run; safeguards updated
+- ASN search placeholder uses a neutral example IP
+
 ## 0.6.0 (2026-10-17)
 - **ASN search by IP**: enter an IP (e.g. from a CrowdSec alert) to see the network announcing it and block it or put
   it behind a captcha; unrouted addresses are explained with their registered holder. The IP check dialog offers the
@@ -11,6 +15,12 @@
   CyberGhost, TorGuard, PrivateVPN, VyprVPN, FastestVPN, VPN Unlimited, VPNSecure
 - **Notifications**: own form; *Send test* checks the unsaved values and *Save* is only possible after a successful
   test (enforced by the server); a banner explains why saving was refused
+- **Second security review**: login attempts are only counted once a password-hash slot is free and IPv6 is
+  throttled per /64 and /48; the notification token is bound to scheme, host and port; notification and LAPI targets
+  must not be link-local (cloud metadata); imports are validated completely before anything is written; hard caps of
+  150,000 ranges and 2^36 IPv6 /48 networks; runs only change decisions whose alert carries asn-blocker's own source;
+  downloads have an enforced deadline; dialogs focus *Cancel* so a stray Enter adds nothing; `:latest` and other tags
+  are set only after the image scan passed
 
 ## 0.5.5 (2026-10-17)
 - The web UI's files are served with `Cache-Control: no-cache`, so browsers revalidate them and show a new version

@@ -16,6 +16,8 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
 - **Lockout protection** for your own connection and active SSH sessions
 - **One container**, no Docker socket, no environment variables; everything is configured in the UI
 
+![Overview: active ranges, last and next run, watched IPs](docs/screenshots/overview.png)
+
 ## Contents
 
 - [How it works](#how-it-works)
@@ -167,9 +169,13 @@ or **Captcha**. An IP – for example from a CrowdSec alert – shows the networ
 announces it, the search says so and names the registered holder. The name search uses a local copy of the
 [bgp.tools](https://bgp.tools) ASN list, refreshed weekly. The **Check IP** field at the top offers the same buttons.
 
+![ASN rules with an IP search: 8.8.8.8 resolves to AS15169 with Block and Captcha buttons](docs/screenshots/asns-ip-search.png)
+
 Not sure where to start? **Suggestions** offers curated lists (large cloud platforms, VPS and dedicated hosting,
 ByteDance crawlers) and Spamhaus ASN-DROP. Each list says what else it blocks, and every ASN is shown for review
 before anything is added.
+
+![Suggested lists with a warning about what each list also blocks](docs/screenshots/suggestions.png)
 
 Adding a rule for the network you are currently connected from asks for an explicit confirmation – useful when you
 deliberately want to block, say, a hotel or office network.
@@ -201,6 +207,8 @@ Exemptions are cut out of every blocked range.
   [ProtonVPN-IPs](https://github.com/tn3w/ProtonVPN-IPs) list; PureVPN, ExpressVPN, CyberGhost, TorGuard, PrivateVPN,
   VyprVPN, FastestVPN, VPN Unlimited and VPNSecure from the [gluetun](https://github.com/qdm12/gluetun-servers)
   project's server data (updated about monthly), as these providers publish no list of their own.
+
+![VPN exemptions: NordVPN servers in four European countries are exempted](docs/screenshots/vpn.png)
 
 ### Lockout protection
 
@@ -254,22 +262,24 @@ entirely by cybercriminals – can be included as an additional set of ASN rules
 
 ### Checking an IP
 
-The search field at the top of every page shows, for any IP, its ASN and prefix, whether it is currently blocked,
-and which rule or exemption applies.
+The **Check IP** field at the top of every page shows, for any IP, its ASN and prefix, whether it is currently
+blocked, and which rule or exemption applies – with buttons to block its network or put it behind a captcha.
 
 ## Safeguards
 
 | | |
 |---|---|
 | **Validate before writing** | If a data source fails or returns invalid data, the run aborts and CrowdSec stays unchanged. |
-| **Sanity check** | If the number of ranges or the blocked IPv4 address space changes by more than 30 % (configurable), the run stops and waits for your confirmation under **Runs**. A hard limit of 2^29 addresses applies even to the first run. |
+| **Sanity check** | If the number of ranges or the blocked IPv4 or IPv6 address space changes by more than 30 % (configurable), the run stops and waits for your confirmation under **Runs**. Hard limits apply even to the first run: 150,000 ranges, 2^29 IPv4 addresses and 2^36 IPv6 /48 networks. |
 | **Implausible data is ignored** | Private and reserved ranges are never blocked; prefixes larger than /8 (IPv6 /16) are discarded. |
 | **No gaps** | New ranges are added before outdated ones are removed. |
 | **Decisions expire** | Decisions last 7 days (configurable) and are renewed by every run, so nothing lingers if asn-blocker is removed. |
-| **Own decisions only** | asn-blocker only manages decisions with the reasons `asn-blocker ban` and `asn-blocker captcha`. |
+| **Own decisions only** | asn-blocker only changes decisions it created itself (reason `asn-blocker ban` / `asn-blocker captcha` and its own alert source). Decisions of other tools and CrowdSec's own detections are never touched. |
 | **Preview** | **Preview** shows exactly what a run would add and remove, without changing anything. |
 
 Every run, with its log and all changes, is kept under **Runs**; every configuration change is recorded under **Log**.
+
+![A run with the added ranges and its log](docs/screenshots/run.png)
 
 ## Operations
 
@@ -300,7 +310,7 @@ docker compose pull asn-blocker && docker compose up -d asn-blocker
 ```
 
 `:latest` is only published after the image passed a vulnerability scan, so automatic updaters such as Watchtower can
-follow it. To pin a build, use a release tag (e.g. `:0.5.1`) or the immutable `:sha-<commit>` tag every build gets.
+follow it. To pin a build, use a release tag (e.g. `:0.6.0`) or the immutable `:sha-<commit>` tag every build gets.
 Changes are listed in the [changelog](CHANGELOG.md).
 
 ### Command line
