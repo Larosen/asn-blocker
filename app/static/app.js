@@ -265,7 +265,8 @@ function route() {
 const checkIp = guard(async (ip) => {
   const r = await api("/check/" + encodeURIComponent(ip));
   const st = r.status ? `<span class="tag ${r.status}">${act(r.status)}</span>` : r.exempt.length ? `<span class="tag ok">${t("Exempt")}</span>` : `<span class="tag">${t("not affected")}</span>`;
-  const asns = r.asns.map((a) => `<tr><td class="mono">AS${a.asn}</td><td>${esc(a.name)}</td><td>${a.rule ? `<span class="tag ${a.rule}">${act(a.rule)}</span>` : `<span class="muted">${t("no rule")}</span>`}</td></tr>`).join("");
+  const asns = r.asns.map((a) => `<tr><td class="mono">AS${a.asn}</td><td>${esc(a.name)} <span class="hide-sm">${classTag(a.class)}</span></td><td class="actions">${a.rule ? `<span class="tag ${a.rule}">${act(a.rule)}</span>`
+    : `<button class="btn sm" value="ban:${a.asn}">${t("Block")}</button> <button class="btn sm" value="captcha:${a.asn}">${t("Captcha")}</button>`}</td></tr>`).join("");
   const body = `<p>${st}</p>
     ${asns ? `<h3>${t("Origin")}</h3><table><tbody>${asns}</tbody></table>${r.prefix ? `<p class="small muted">${t("Prefix")} ${esc(r.prefix)}</p>` : ""}` : r.global ? "" : `<p class="muted">${t("Not a public address.")}</p>`}
     ${Object.entries(r.ranges).map(([k, v]) => `<p>${t("Covered by {action}:", { action: `<b>${act(k)}</b>` })} <code>${v.map(esc).join(", ")}</code></p>`).join("")}
@@ -275,6 +276,11 @@ const checkIp = guard(async (ip) => {
   const v = await dialog({ title: r.ip, body, actions: [["watch", t("Watch this IP")], ["exempt", t("As exemption")], ["cancel", t("Close"), "primary"]] });
   if (v === "watch") { await api("/watch", { method: "POST", body: { ip: r.ip } }); toast(t("Watched IP added")); refreshOverview(); }
   if (v === "exempt") { await api("/exemptions", { method: "POST", body: { kind: "cidr", value: r.ip } }); toast(t("Exemption saved")); refreshOverview(); }
+  const m = /^(ban|captcha):(\d+)$/.exec(v || "");
+  if (m) {
+    const a = r.asns.find((x) => x.asn === +m[2]);
+    if (await addAsnRule(a, m[1])) { toast(t("AS{asn} added – takes effect with the next run", { asn: a.asn })); refreshOverview(); }
+  }
 });
 
 // --- Overview ----------------------------------------------------------------------------------------------
@@ -305,6 +311,12 @@ async function viewOverview(el) {
 const statusTag = (s) => (!s ? `<span class="muted small">${t("not checked yet")}</span>` : s === "ban" || s === "captcha" ? `<span class="tag ${s}">${act(s)}</span>` : `<span class="tag ok">${t("clear")}</span>`);
 
 // --- ASNs ------------------------------------------------------------------------------------------------------
+// One rule from a search hit or an IP check; consumer ISPs ("eyeball" networks) need a confirmation.
+async function addAsnRule(a, action) {
+  if (/eyeball/i.test(a.class || "") && !(await confirmDlg(t("Consumer network"), t("AS{asn} {name} is classified as an eyeball network (consumer ISP). Blocking it hits real visitors. Add anyway?", { asn: a.asn, name: esc(a.name) }), t("Add"), "danger"))) return false;
+  return putRules("/asns", [{ asn: a.asn, name: a.name || "", action, note: a.via ? t("from IP {ip}", { ip: a.via.ip }) : "" }]);
+}
+
 // Saves rules; if they would block the network this browser is connected from, asks for an explicit confirmation.
 async function putRules(path, body, method = "PUT") {
   try {
@@ -324,7 +336,7 @@ async function putRules(path, body, method = "PUT") {
 
 async function viewAsns(el) {
   el.innerHTML = `<div class="section"><div class="search" id="search">
-      <input type="search" id="q" placeholder="${t("Search ASN – number or name, e.g. hetzner, AS16509")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
+      <input type="search" id="q" placeholder="${t("Search ASN – number, name or an IP, e.g. hetzner, AS16509, 40.51.166.16")}" autocomplete="off" aria-label="${t("Search ASN")}" aria-controls="suggest">
       <div class="suggest box" id="suggest" hidden></div></div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Rules")}</h2><p class="small muted">${t("New rules take effect after “Apply”.")}</p></div>
       <div class="row"><input type="search" id="filter" placeholder="${t("Filter")}" aria-label="${t("Filter rules")}"><button class="btn" id="suggest-btn">${t("Suggestions")}</button><button class="btn" id="paste">${t("Paste list")}</button></div></div>
@@ -399,15 +411,21 @@ async function viewAsns(el) {
     let res;
     try { res = await api("/asn/search?q=" + encodeURIComponent(term)); } catch (e) { sug.innerHTML = `<div class="empty">${esc(e.message)}</div>`; sug.hidden = false; return; }
     if (my !== seq) return;
-    sug.innerHTML = res.length ? res.map((r, i) => `<div class="item" data-i="${i}"><span class="mono">AS${r.asn}</span><span>${esc(r.name)} ${r.cc ? `<span class="muted small">${esc(r.cc)}</span>` : ""}</span>
+    if (res.length === 1 && res[0].asn === null) {
+      const v = res[0].via;
+      sug.innerHTML = `<div class="empty">${t("{ip} is not announced by any network right now, so there is no ASN to block.", { ip: `<code>${esc(v.ip)}</code>` })}${v.holder ? `<br>${t("Registered to: {holder}", { holder: esc(v.holder) })}` : ""}</div>`;
+      sug.hidden = false;
+      return;
+    }
+    sug.innerHTML = res.length ? res.map((r, i) => `<div class="item" data-i="${i}"><span class="mono">AS${r.asn}</span><span>${esc(r.name)} ${r.cc ? `<span class="muted small">${esc(r.cc)}</span>` : ""}${r.via ? `<br><span class="muted small">${t("IP {ip} is in {prefix}", { ip: esc(r.via.ip), prefix: esc(r.via.prefix || "?") })}</span>` : ""}</span>
         <span class="hide-sm">${classTag(r.class)}</span>
         <span class="row">${r.rule ? `<span class="tag ${r.rule}">${act(r.rule)}</span>` : `<button class="btn sm" data-a="ban">${t("Block")}</button><button class="btn sm" data-a="captcha">${t("Captcha")}</button>`}</span></div>`).join("")
       : `<div class="empty">${t("No ASN found.")}</div>`;
     sug.hidden = false;
     $$(".item", sug).forEach((it) => $$("[data-a]", it).forEach((b) => (b.onclick = guard(async () => {
       const r = res[it.dataset.i];
-      if (/eyeball/i.test(r.class || "") && !(await confirmDlg(t("Consumer network"), t("AS{asn} {name} is classified as an eyeball network (consumer ISP). Blocking it hits real visitors. Add anyway?", { asn: r.asn, name: esc(r.name) }), t("Add"), "danger"))) return;
-      await save([{ asn: r.asn, name: r.name, action: b.dataset.a, note: "" }]);
+      if (!(await addAsnRule(r, b.dataset.a))) return;
+      await reload();
       toast(t("AS{asn} added", { asn: r.asn }));
       search();
     }))));

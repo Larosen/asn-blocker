@@ -281,7 +281,26 @@ def _src(fn, *a, **kw):
 @api.get("/asn/search")
 def asn_search(q: str = Query(max_length=100)):
     rules = {r["asn"]: r["action"] for r in db.q("SELECT asn, action FROM asn_rules")}
-    return [{**r, "rule": rules.get(r["asn"])} for r in _src(sources.search_asn, q)]
+    try:
+        ip = ipaddress.ip_address(q.strip())
+    except ValueError:
+        return [{**r, "rule": rules.get(r["asn"])} for r in _src(sources.search_asn, q)]
+    # An IP (e.g. from a CrowdSec alert): which network does it belong to?
+    if not ip.is_global:
+        raise HTTPException(422, f"{ip} is not a public address")
+    info = _src(sources.ip_info, str(ip))
+    if not info["asns"]:  # not routed: there is no network to block
+        try:
+            holder = sources.ip_holder(str(ip))
+        except sources.SourceError:
+            holder = ""
+        return [{"asn": None, "rule": None, "via": {"ip": str(ip), "prefix": None, "holder": holder}}]
+    out = []
+    for asn in info["asns"]:
+        n = db.q1("SELECT name, class, cc FROM asn_names WHERE asn=?", (asn,)) or {}
+        out.append({"asn": asn, "name": n.get("name", ""), "class": n.get("class", ""), "cc": n.get("cc", ""),
+                    "rule": rules.get(asn), "via": {"ip": str(ip), "prefix": info.get("prefix")}})
+    return out
 
 
 def _prefix_stats(asn):

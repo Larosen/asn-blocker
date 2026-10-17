@@ -368,7 +368,9 @@ def check_ip(ip):
             out["prefix"] = info["prefix"]
             for asn in info["asns"]:
                 r = db.q1("SELECT action FROM asn_rules WHERE asn=?", (asn,))
-                out["asns"].append({"asn": asn, "name": sources.asn_name(asn), "rule": r["action"] if r else None})
+                n = db.q1("SELECT class FROM asn_names WHERE asn=?", (asn,))
+                out["asns"].append({"asn": asn, "name": sources.asn_name(asn), "rule": r["action"] if r else None,
+                                    "class": n["class"] if n else ""})
         except sources.SourceError as e:
             out["lookup_error"] = str(e)
     return out

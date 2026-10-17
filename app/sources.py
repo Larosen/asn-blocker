@@ -4,8 +4,10 @@ import io
 import ipaddress
 import json
 import os
+import re
 import socket
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,6 +21,8 @@ RIPE_APP = "asn-blocker"
 PREFIX_TTL = 6 * 3600
 PROVIDER_TTL = 3600
 CONTINENTS = json.loads((Path(__file__).parent / "data" / "continents.json").read_text())
+_COUNTRIES = json.loads((Path(__file__).parent / "data" / "country_names.json").read_text())
+COUNTRY_CODES, COUNTRY_NAMES = _COUNTRIES["codes"], _COUNTRIES["names"]  # lower-case name -> ISO-2, ISO-2 -> name
 
 
 class SourceError(RuntimeError):
@@ -154,6 +158,23 @@ def ip_info(ip):
         return hit
     d = _ripe("network-info", ip, 20)
     out = {"asns": [int(a) for a in d.get("asns", []) if str(a).isdigit()], "prefix": d.get("prefix")}
+    db.cache_put(key, out)
+    return out
+
+
+def ip_holder(ip):
+    """Registered holder of an address block (whois via RIPEstat, any registry), cached for a day."""
+    key = f"holder:{ip}"
+    hit = db.cache_get(key, 86400)
+    if hit is not None:
+        return hit
+    d = _ripe("whois", ip, 20)
+    found = {}
+    for rec in d.get("records") or []:
+        for r in rec if isinstance(rec, list) else []:
+            if isinstance(r, dict) and str(r.get("key", "")).lower() in ("organization", "orgname", "org-name", "descr", "netname"):
+                found.setdefault(str(r["key"]).lower(), str(r.get("value", ""))[:200])
+    out = next((found[k] for k in ("organization", "orgname", "org-name", "descr", "netname") if found.get(k)), "")
     db.cache_put(key, out)
     return out
 
@@ -314,4 +335,111 @@ class AirVPN(Provider):
         return out
 
 
-PROVIDERS = {p.id: p for p in (NordVPN(), Mullvad(), Surfshark(), IVPN(), PIA(), AirVPN())}
+def _cc(*names):
+    """ISO-2 for free-text country names such as 'USA Austin', 'Korea (South)' or 'Hong' + 'Kong'."""
+    for name in names:
+        words = re.sub(r"\s*\(.*?\)", "", str(name or "")).strip().lower().split()
+        for n in range(len(words), 0, -1):
+            code = COUNTRY_CODES.get(" ".join(words[:n]))
+            if code:
+                return code
+    return ""
+
+
+def _zip_names(url, timeout=120):
+    """File names inside a remote zip. Only the directory is read – nothing is decompressed."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(_fetch(url, None, timeout)[0])) as z:
+            return z.namelist()
+    except (httpx.HTTPError, zipfile.BadZipFile) as e:
+        raise SourceError(f"{url}: {e}") from e
+
+
+class Windscribe(Provider):
+    id, name = "windscribe", "Windscribe"
+    note = "assets.windscribe.com – connection IPs of every node (three per node)."
+
+    def fetch(self):
+        out = []
+        for loc in http_get("https://assets.windscribe.com/serverlist/mob-v2/1/0").get("data", []):
+            cc = str(loc.get("country_code", "")).upper()
+            for g in loc.get("groups") or []:
+                for n in g.get("nodes") or []:
+                    out += [(cc, COUNTRY_NAMES.get(cc, cc), n[k]) for k in ("ip", "ip2", "ip3") if n.get(k)]
+        return out
+
+
+class OVPN(Provider):
+    id, name = "ovpn", "OVPN"
+    note = "ovpn.com client API."
+
+    def fetch(self):
+        return [(str(d.get("country", "")).upper(), d.get("country_name", ""), s.get("ip"))
+                for d in http_get("https://www.ovpn.com/v2/api/client/entry").get("datacenters", [])
+                for s in d.get("servers") or []]
+
+
+class Privado(Provider):
+    id, name = "privado", "PrivadoVPN"
+    note = "privadovpn.com server export."
+
+    def fetch(self):
+        out = []
+        for s in http_get("https://privadovpn.com/apps/servers_export.json").get("servers", []):
+            cc = _cc(s.get("country"))
+            out.append((cc, COUNTRY_NAMES.get(cc, ""), s.get("ip")))
+        return out
+
+
+class IPVanish(Provider):
+    id, name = "ipvanish", "IPVanish"
+    note = "configs.ipvanish.com OpenVPN configs (~5 MB) – hostnames, IPs resolved via DNS."
+
+    def fetch(self):
+        out = []
+        for f in _zip_names("https://configs.ipvanish.com/openvpn/v2.6.0-0/configs.zip"):
+            m = re.match(r"ipvanish-([A-Z]{2})-.*-([a-z0-9]+-[a-z]\d+)\.ovpn$", f)
+            if m:  # ipvanish-DE-Frankfurt-fra-a01.ovpn -> fra-a01.ipvanish.com
+                out.append((m[1], COUNTRY_NAMES.get(m[1], m[1]), f"{m[2]}.ipvanish.com"))
+        return out
+
+
+class ProtonVPN(Provider):
+    id, name = "protonvpn", "Proton VPN"
+    note = ("Exit IPs from github.com/tn3w/ProtonVPN-IPs (third party, updated daily) – Proton's own API needs a "
+            "login.")
+
+    def fetch(self):
+        data = http_get("https://raw.githubusercontent.com/tn3w/ProtonVPN-IPs/master/protonvpn_logicals.json")
+        return [(str(lg.get("ExitCountry", "")).upper(), COUNTRY_NAMES.get(lg.get("ExitCountry", ""), ""), s.get("ExitIP"))
+                for lg in data.get("LogicalServers", []) for s in lg.get("Servers") or []]
+
+
+class Gluetun(Provider):
+    """Providers without a public list of their own: server data collected by the gluetun project
+    (github.com/qdm12/gluetun-servers, MIT), refreshed roughly monthly."""
+    BASE = "https://raw.githubusercontent.com/qdm12/gluetun-servers/main/pkg/servers/"
+
+    def __init__(self, id, name, file):
+        self.id, self.name, self.file = id, name, file
+        self.note = ("Server IPs collected by the gluetun project (third party, updated about monthly); "
+                     "locations may be virtual.")
+
+    def fetch(self):
+        out = []
+        for s in http_get(self.BASE + self.file.replace(" ", "%20") + ".json").get("servers", []):
+            name = s.get("country") or s.get("region") or ""
+            cc = _cc(name, f"{name} {s.get('city', '')}")
+            out += [(cc, COUNTRY_NAMES.get(cc, name), ip) for ip in s.get("ips") or []]
+        return out
+
+
+PROVIDERS = {p.id: p for p in (
+    NordVPN(), Mullvad(), Surfshark(), IVPN(), PIA(), AirVPN(), ProtonVPN(), Windscribe(), IPVanish(), Privado(),
+    OVPN(),
+    Gluetun("purevpn", "PureVPN", "purevpn"), Gluetun("expressvpn", "ExpressVPN", "expressvpn"),
+    Gluetun("cyberghost", "CyberGhost", "cyberghost"), Gluetun("torguard", "TorGuard", "torguard"),
+    Gluetun("privatevpn", "PrivateVPN", "privatevpn"), Gluetun("vyprvpn", "VyprVPN", "vyprvpn"),
+    Gluetun("fastestvpn", "FastestVPN", "fastestvpn"), Gluetun("vpnunlimited", "VPN Unlimited", "vpn unlimited"),
+    Gluetun("vpnsecure", "VPNSecure", "vpnsecure"),
+)}
