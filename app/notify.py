@@ -5,7 +5,10 @@ An optional access token is stored separately from the URL and sent as a header 
 link to the run they are about.
 """
 import hashlib
+import ipaddress
 import logging
+import socket
+import threading
 import time
 
 import httpx
@@ -25,23 +28,46 @@ class NotifyError(RuntimeError):
 
 # Settings can only be saved after a successful test with exactly these values (fingerprint -> time of the test)
 _tested: dict[str, float] = {}
+_tested_lock = threading.Lock()
 TEST_VALID = 1800
 
 
-def _fingerprint(url, fmt, token):
-    return hashlib.sha256(f"{url}\n{fmt}\n{token}".encode()).hexdigest()
+def _fingerprint(*values):
+    return hashlib.sha256("\n".join(str(v) for v in values).encode()).hexdigest()
 
 
-def mark_tested(url, fmt, token):
+def mark_tested(*values):
     now = time.time()
-    for k in [k for k, t in _tested.items() if now - t > TEST_VALID]:
-        del _tested[k]
-    _tested[_fingerprint(url, fmt, token)] = now
+    with _tested_lock:
+        for k in [k for k, t in _tested.items() if now - t > TEST_VALID]:
+            del _tested[k]
+        _tested[_fingerprint(*values)] = now
 
 
-def was_tested(url, fmt, token):
-    t = _tested.get(_fingerprint(url, fmt, token))
+def was_tested(*values):
+    with _tested_lock:
+        t = _tested.get(_fingerprint(*values))
     return t is not None and time.time() - t <= TEST_VALID
+
+
+def _origin(url):
+    u = httpx.URL(url)
+    return u.scheme, (u.host or "").lower().rstrip("."), u.port or {"http": 80, "https": 443}.get(u.scheme)
+
+
+def check_target(url):
+    """Notifications may go to internal services (e.g. http://ntfy:80), but never to link-local addresses such as
+    cloud metadata endpoints."""
+    try:
+        host = httpx.URL(url).host
+        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError, httpx.InvalidURL):
+        return  # unresolvable: the request itself will fail with a clear error
+    for a in addrs:
+        ip = ipaddress.ip_address(a.split("%")[0])
+        if ip.is_link_local or (ip.version == 6 and ip.ipv4_mapped and ip.ipv4_mapped.is_link_local) \
+                or ip.is_multicast or ip.is_unspecified:
+            raise NotifyError(f"{host} resolves to {ip}, which is not allowed as a notification target")
 
 
 def mask(url):
@@ -55,8 +81,9 @@ def mask(url):
 
 
 def same_host(a, b):
+    """Same scheme, host and port – a stored token never follows the URL to another server or to plain http."""
     try:
-        return bool(a and b) and httpx.URL(a).netloc == httpx.URL(b).netloc
+        return bool(a and b) and _origin(a) == _origin(b)
     except (httpx.InvalidURL, TypeError):
         return False
 
@@ -79,6 +106,7 @@ def send(title, message, level="error", run_id=None, raise_errors=False, cfg=Non
     click = link(run_id, base)
     headers = {"User-Agent": USER_AGENT}
     try:
+        check_target(url)
         if fmt == "ntfy":
             headers |= {"Title": title, "Priority": prio, "Tags": f"{tags},shield"}
             if click:
@@ -110,3 +138,7 @@ def send(title, message, level="error", run_id=None, raise_errors=False, cfg=Non
         log.warning("Notification failed: %s", e)
         if raise_errors:
             raise
+    except Exception as e:  # noqa: BLE001 - a notification must never break a run
+        log.warning("Notification failed: %s", type(e).__name__)
+        if raise_errors:
+            raise NotifyError(f"notification failed: {type(e).__name__}") from e

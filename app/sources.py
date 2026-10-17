@@ -98,7 +98,7 @@ def search_asn(query, limit=25):
         return []
     digits = q.upper().removeprefix("AS")
     have_local = db.q1("SELECT 1 AS x FROM asn_names LIMIT 1")
-    if digits.isdigit():
+    if re.fullmatch(r"[0-9]{1,10}", digits) and int(digits) < 2**32:
         rows = db.q("SELECT asn,name,class,cc FROM asn_names WHERE asn=? OR CAST(asn AS TEXT) LIKE ? "
                     "ORDER BY asn=? DESC, asn LIMIT ?", (int(digits), digits + "%", int(digits), limit))
         if rows or have_local:

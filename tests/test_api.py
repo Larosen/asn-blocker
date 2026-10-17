@@ -377,3 +377,100 @@ def test_search_by_unrouted_ip_explains(client, monkeypatch):
     monkeypatch.setattr(sources, "ip_holder", lambda ip: "Eli Lilly and Company (ELILIL-Z)")
     r = client.get("/api/asn/search", params={"q": "40.51.166.16"}).json()
     assert r == [{"asn": None, "rule": None, "via": {"ip": "40.51.166.16", "prefix": None, "holder": "Eli Lilly and Company (ELILIL-Z)"}}]
+
+
+def test_busy_hashing_does_not_use_up_attempts(client):
+    setup_local(client)
+    client.post("/api/logout", headers=H)
+    assert auth._hashing.acquire(blocking=False) and auth._hashing.acquire(blocking=False)
+    try:
+        for _ in range(8):   # a flood keeping both scrypt slots busy
+            assert client.post("/api/login", headers=H, json={"username": "admin", "password": "x"}).status_code == 429
+    finally:
+        auth._hashing.release()
+        auth._hashing.release()
+    ok = client.post("/api/login", headers=H, json={"username": "admin", "password": "correct-horse-battery"})
+    assert ok.status_code == 200
+
+
+def test_throttle_wide_ipv6_bucket_and_lru_eviction():
+    for i in range(20):                       # 20 different /64s in one /48
+        auth.attempt(f"2001:db8:7:{i:x}::1")
+    with pytest.raises(auth.HTTPException):
+        auth.attempt("2001:db8:7:ff::1")
+    auth._failed.clear()
+    for _ in range(5):
+        auth.attempt("198.51.100.9")
+    for i in range(10001):                    # rotation must not reset the locked bucket
+        auth._failed[f"x{i}"] = [__import__("time").time() - 1]
+    auth.attempt("203.0.113.1")
+    with pytest.raises(auth.HTTPException):
+        auth.attempt("198.51.100.9")
+
+
+def test_all_trusted_xff_chain_falls_back_to_peer(client, monkeypatch):
+    db.put("trusted_proxies", ["0.0.0.0/0"])
+    monkeypatch.setattr(auth, "peer_ip", lambda r: "10.1.1.1")
+
+    class R:
+        headers = {"x-forwarded-for": "6.6.6.6, 10.2.2.2"}
+    assert auth.client_ip(R()) == "10.1.1.1"
+    assert auth.broad_trusted_proxies() == ["0.0.0.0/0"]
+
+
+def test_notify_token_bound_to_scheme_host_port():
+    from app import notify
+    assert notify.same_host("https://h.example/a", "https://h.example:443/b")
+    for other in ("http://h.example/a", "https://h.example:8443/a", "https://g.example/a"):
+        assert not notify.same_host(other, "https://h.example/b"), other
+
+
+def test_notify_rejects_link_local_and_limits_tests(client, monkeypatch):
+    from app import main as m
+    from app import notify
+    setup_local(client)
+    with pytest.raises(notify.NotifyError):
+        notify.check_target("http://169.254.169.254/latest")
+    notify.check_target("http://127.0.0.1:2586/x")          # internal services stay allowed
+    r = client.post("/api/notify/test", headers=H, json={"notify_url": "http://169.254.169.254/x"})
+    assert r.status_code == 502 and "not allowed" in r.json()["detail"]
+    r = client.put("/api/crowdsec", headers=H, json={"mode": "lapi", "lapi_url": "http://169.254.169.254", "machine_id": "a", "password": "p"})
+    assert r.status_code == 422
+    idn = {"notify_url": "https://n.example/x", "public_url": "https://bücher.example"}
+    assert client.post("/api/notify/test", headers=H, json=idn).status_code == 422
+    monkeypatch.setattr(notify, "send", lambda *a, **k: None)
+    m._notify_tests.clear()
+    codes = [client.post("/api/notify/test", headers=H, json={"notify_url": "https://n.example/x"}).status_code for _ in range(11)]
+    assert codes[-1] == 429 and codes[:-1].count(200) >= 9
+
+
+def test_notify_send_never_raises_into_runs(monkeypatch):
+    from app import notify
+    db.put("notify_url", "https://n.example/x")
+
+    def boom(*a, **k):
+        raise UnicodeEncodeError("ascii", "ü", 0, 1, "x")
+    monkeypatch.setattr(notify.httpx, "post", boom)
+    monkeypatch.setattr(notify, "check_target", lambda url: None)
+    notify.send("t", "m")            # must not raise
+
+
+def test_import_is_validated_before_writing(client):
+    setup_local(client)
+    bad = {"version": 1, "asns": [{"asn": 14061, "action": "ban"}],
+           "exemptions": [{"kind": "cidr", "value": "203.0.113.0/24"}, {"kind": "cidr", "value": "0.0.0.0/0"}]}
+    r = client.post("/api/import", headers=H, json=bad)
+    assert r.status_code == 422 and "too large" in r.json()["detail"]
+    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 0 and db.q1("SELECT count(*) n FROM exemptions")["n"] == 0
+    assert client.post("/api/exemptions", headers=H, json={"kind": "cidr", "value": "::/0"}).status_code == 422
+    good = {**bad, "exemptions": bad["exemptions"][:1], "watch": [{"ip": "198.51.100.1"}]}
+    assert client.post("/api/import", headers=H, json=good).status_code == 200
+    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 1 and db.q1("SELECT count(*) n FROM watch_ips")["n"] == 1
+
+
+def test_search_rejects_odd_digits(client):
+    setup_local(client)
+    with db.tx() as c:
+        c.execute("INSERT INTO asn_names VALUES(14061,'DIGITALOCEAN','Content','US')")
+    for q in ("²", "9" * 40):
+        assert client.get("/api/asn/search", params={"q": q}).status_code == 200
