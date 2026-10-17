@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.3 (2026-10-17)
+- Active SSH sessions are now also detected via systemd-logind (`/run/systemd/sessions`), for distributions that no
+  longer have a utmp file (e.g. Ubuntu 26.04). The compose file mounts it by default; utmp remains supported.
+- A utmp mount that Docker created as an empty directory (host without utmp) counts as "not mounted" instead of an error.
+
 ## 0.5.2 (2026-10-16)
 - README rewritten for new users: requirements, installation, access options, usage, safeguards, operations, troubleshooting
 - Maintenance: removing decisions of other tools needs an explicit reason (no pre-filled value) and explains that only `cscli` decisions are affected

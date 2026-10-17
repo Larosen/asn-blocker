@@ -114,3 +114,39 @@ def test_local_browser_ip_not_offered(env, monkeypatch):
     with TestClient(main.app) as client:
         setup_local(client)
         assert client.get("/api/protect").json()["client_ip"] is None  # TestClient peer is not a public IP
+
+
+def logind_session(directory, name, **kv):
+    (directory / name).write_text("# This is private data. Do not parse.\n" + "".join(f"{k}={v}\n" for k, v in kv.items()))
+
+
+def test_logind_sessions(tmp_path):
+    d = tmp_path / "sessions"
+    d.mkdir()
+    logind_session(d, "3", UID=0, USER="root", STATE="active", REMOTE=1, SERVICE="sshd", TTY="pts/0",
+                   REMOTE_HOST="88.198.50.23", REALTIME="1700000000123456")
+    logind_session(d, "4", USER="alice", STATE="active", REMOTE=1, SERVICE="sshd", REMOTE_HOST="2001:4860::8888")
+    logind_session(d, "5", USER="bob", STATE="active", REMOTE=1, REMOTE_HOST="10.0.0.7")      # private -> ignored
+    logind_session(d, "6", USER="carol", STATE="active", SERVICE="login", TTY="tty1")       # local console
+    logind_session(d, "7", USER="dave", STATE="closing", REMOTE=1, REMOTE_HOST="84.150.3.10")
+    logind_session(d, "8", USER="eve", REMOTE=1, REMOTE_HOST="gateway.example.net")          # hostname -> ignored
+    (d / "3.ref").write_text("")                                                             # FIFO placeholder
+    sessions, status = selfprotect.ssh_sessions(tmp_path / "no-utmp", d)
+    assert status == "ok"
+    assert [(s["ip"], s["user"], s["line"]) for s in sessions] == [
+        ("88.198.50.23", "root", "pts/0"), ("2001:4860::8888", "alice", "session 4")]
+    assert sessions[0]["since"] == 1700000000
+
+
+def test_utmp_directory_created_by_docker_counts_as_not_mounted(tmp_path):
+    (tmp_path / "utmp").mkdir()  # what Docker creates when the host has no utmp file
+    assert selfprotect.ssh_sessions(tmp_path / "utmp", tmp_path / "nope") == ([], "not mounted")
+
+
+def test_utmp_and_logind_combined(utmp, tmp_path):
+    d = tmp_path / "sessions"
+    d.mkdir()
+    logind_session(d, "9", USER="root", REMOTE=1, TTY="pts/1", REMOTE_HOST="88.198.50.23")  # same as utmp pts/1
+    logind_session(d, "10", USER="root", REMOTE=1, TTY="pts/7", REMOTE_HOST="84.150.3.10")
+    sessions, status = selfprotect.ssh_sessions(utmp, d)
+    assert status == "ok" and [s["ip"] for s in sessions] == ["88.198.50.23", "2001:4860::8888", "84.150.3.10"]

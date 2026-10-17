@@ -486,7 +486,7 @@ async function viewExemptions(el) {
       <div class="box">
         <div class="pad-sm row"><h3 class="inline-h">${t("Active SSH sessions")}</h3>
           ${prot.utmp === "ok" ? `<span class="tag ok">${t("detected")}</span>` : `<span class="tag captcha">${t("not available")}</span>`}</div>
-        ${prot.utmp !== "ok" ? `<div class="note warn small">${t("To protect SSH sessions automatically, mount the host's /var/run/utmp read-only:")} <code>- /var/run/utmp:/host/utmp:ro</code>. ${t("Or run this in your SSH session:")} <code>docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect</code></div>`
+        ${prot.utmp !== "ok" ? `<div class="note warn small">${t("To protect SSH sessions automatically, mount the host's session registry read-only:")} <code>- /run/systemd/sessions:/host/sessions:ro</code> ${t("(older systems without systemd-logind:")} <code>- /var/run/utmp:/host/utmp:ro</code>). ${t("Or run this in your SSH session:")} <code>docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect</code></div>`
           : sessRows ? `<table><tbody>${sessRows}</tbody></table>` : `<div class="empty">${t("No remote SSH session active.")}</div>`}
         <div class="pad-sm"><h3 class="inline-h">${t("Permanently protected")}</h3></div>
         ${protRows ? `<table><tbody>${protRows}</tbody></table>` : `<div class="empty">${t("Nothing protected yet. Protect at least the ASN of your internet connection.")}</div>`}
