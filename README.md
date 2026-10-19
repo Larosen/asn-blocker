@@ -203,7 +203,8 @@ Exemptions are cut out of every blocked range.
   Note: some VPNs use different addresses for incoming and outgoing traffic. NordVPN's outgoing IPs are mostly in
   `AS207137`, which you can add as an exempt ASN.
   Sources: the providers' own server lists for NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN,
-  Windscribe, IPVanish, PrivadoVPN and OVPN; Proton VPN's exit IPs from the daily
+  Windscribe, IPVanish (with the gluetun data as fallback when IPVanish refuses the download), PrivadoVPN and
+  OVPN; Proton VPN's exit IPs from the daily
   [ProtonVPN-IPs](https://github.com/tn3w/ProtonVPN-IPs) list; PureVPN, ExpressVPN, CyberGhost, TorGuard, PrivateVPN,
   VyprVPN, FastestVPN, VPN Unlimited and VPNSecure from the [gluetun](https://github.com/qdm12/gluetun-servers)
   project's server data (updated about monthly), as these providers publish no list of their own.
