@@ -430,7 +430,28 @@ def check_ip(ip):
                                     "class": n["class"] if n else ""})
         except sources.SourceError as e:
             out["lookup_error"] = str(e)
+        out["vpn_near"] = _vpn_neighbours(a)
     return out
+
+
+def _vpn_neighbours(a):
+    """VPN servers listed in the same /24 (IPv6 /64) as the address. Exit IPs often differ from the listed server
+    IPs but sit next to them – then the address is most likely a VPN exit. Uses cached lists only."""
+    net = ipaddress.ip_network(f"{a}/{24 if a.version == 4 else 64}", strict=False)
+    selected = {(r["provider"], r["country"]) for r in db.q("SELECT provider, country FROM vpn_rules")}
+    modes = db.get("vpn_modes") or {}
+    out = []
+    for pid, prov in sources.PROVIDERS.items():
+        near = set()
+        for cc, _, v in db.cache_get(f"vpn:{pid}", float("inf")) or []:
+            try:
+                if ipaddress.ip_address(v) in net:
+                    near.add(cc)
+            except ValueError:
+                continue  # hostname entries
+        out += [{"provider": pid, "name": prov.name, "country": cc, "selected": (pid, cc) in selected,
+                 "mode": modes.get(pid, "exact")} for cc in sorted(near)]
+    return out[:10]
 
 
 # --- Scheduler -------------------------------------------------------------------------------------------

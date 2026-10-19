@@ -378,3 +378,12 @@ def test_ipvanish_falls_back_to_gluetun_when_refused(monkeypatch):
         {"country": "Germany", "city": "Frankfurt", "hostname": "fra-a01.ipvanish.com", "ips": ["203.0.113.5"]}]})
     prov = sources.IPVanish()
     assert prov.fetch() == [("DE", "Germany", "203.0.113.5")] and prov.source == "gluetun fallback"
+
+
+def test_check_ip_points_to_neighbouring_vpn_servers(env, monkeypatch):
+    monkeypatch.setattr(sources, "ip_info", lambda ip: {"asns": [1], "prefix": "11.0.0.0/16"})
+    engine.run("apply", "test")
+    r = engine.check_ip("11.0.6.200")  # NordVPN NO lists 11.0.6.9; the exit IP is a neighbour
+    assert r["status"] == "ban"
+    assert r["vpn_near"] == [{"provider": "nordvpn", "name": "NordVPN", "country": "NO", "selected": False, "mode": "exact"}]
+    assert engine.check_ip("11.0.9.9")["vpn_near"] == []
