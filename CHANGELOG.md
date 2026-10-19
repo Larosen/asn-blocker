@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3 (2026-10-19)
+- IPVanish: if configs.ipvanish.com refuses the download (it blocks some data center networks, e.g. GitHub's
+  runners), the gluetun project's IPVanish server data is used instead of failing; `check-sources` shows which list
+  was used
+
 ## 0.6.2 (2026-10-17)
 - **Stopped runs are confirmed in one step**: when the sanity check stops a run, a dialog shows every reason with
   *Apply anyway*, *Review changes* and *Not now*; the banner and the apply bar offer *Apply anyway* too, instead of a

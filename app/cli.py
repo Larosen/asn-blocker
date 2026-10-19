@@ -77,7 +77,8 @@ def check_sources() -> bool:
             expect(all(ipaddress.ip_address(i).is_global for i in ips), f"{cc}: non-public IP")
             servers = sum(c["servers"] for c in countries)
             note = f", no continent: {','.join(missing)}" if missing else ""
-            return f"{len(countries)} countries, {servers} entries; {cc}: {len(ips)} IPs, e.g. {ips[0]}{note}"
+            via = f" (via {prov.source})" if getattr(prov, "source", None) else ""
+            return f"{len(countries)} countries, {servers} entries; {cc}: {len(ips)} IPs, e.g. {ips[0]}{note}{via}"
         check(f"VPN {prov.name}", provider)
 
     width = max(len(r[1]) for r in results)

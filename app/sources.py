@@ -3,6 +3,7 @@ import csv
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -15,6 +16,8 @@ from pathlib import Path
 import httpx
 
 from . import db
+
+log = logging.getLogger("asn_blocker.sources")
 
 USER_AGENT = os.environ.get("USER_AGENT", "asn-blocker (+https://github.com/larosen/asn-blocker)")
 RIPE = "https://stat.ripe.net/data"
@@ -452,15 +455,26 @@ class Privado(Provider):
 class IPVanish(Provider):
     id, name = "ipvanish", "IPVanish"
     host_suffix = ".ipvanish.com"
-    note = "configs.ipvanish.com OpenVPN configs (~5 MB) – hostnames, IPs resolved via DNS."
+    note = ("configs.ipvanish.com OpenVPN configs (~5 MB) – hostnames, IPs resolved via DNS. If IPVanish refuses the "
+            "download (it blocks some data center networks), the gluetun project's server data is used instead.")
+    source = None  # which list the last fetch used, shown by check-sources
 
     def fetch(self):
-        out = []
-        for f in _zip_names("https://configs.ipvanish.com/openvpn/v2.6.0-0/configs.zip"):
-            m = re.match(r"ipvanish-([A-Z]{2})-.*-([a-z0-9]+-[a-z]\d+)\.ovpn$", f)
-            if m:  # ipvanish-DE-Frankfurt-fra-a01.ovpn -> fra-a01.ipvanish.com
-                out.append((m[1], COUNTRY_NAMES.get(m[1], m[1]), f"{m[2]}.ipvanish.com"))
-        return out
+        try:
+            out = []
+            for f in _zip_names("https://configs.ipvanish.com/openvpn/v2.6.0-0/configs.zip"):
+                m = re.match(r"ipvanish-([A-Z]{2})-.*-([a-z0-9]+-[a-z]\d+)\.ovpn$", f)
+                if m:  # ipvanish-DE-Frankfurt-fra-a01.ovpn -> fra-a01.ipvanish.com
+                    out.append((m[1], COUNTRY_NAMES.get(m[1], m[1]), f"{m[2]}.ipvanish.com"))
+            if out:
+                self.source = "configs.ipvanish.com"
+                return out
+            err = "no server configs in the archive"
+        except SourceError as e:
+            err = str(e)
+        log.warning("IPVanish list unavailable (%s), using the gluetun server data", clean(err, 200))
+        self.source = "gluetun fallback"
+        return Gluetun(self.id, self.name, "ipvanish").fetch()
 
 
 class ProtonVPN(Provider):

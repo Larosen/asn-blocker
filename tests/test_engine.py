@@ -367,3 +367,14 @@ def test_country_name_parsing_is_bounded():
 def test_clean_removes_control_and_bidi():
     assert sources.clean("a\nb\x1b[31m‮c") == "a?b?[31m?c"
     assert sources.clean("x" * 500, 10) == "x" * 10 + "…"
+
+
+def test_ipvanish_falls_back_to_gluetun_when_refused(monkeypatch):
+    def refused(url, *a, **k):
+        raise sources.SourceError(f"{url}: Client error '403 Forbidden'")
+
+    monkeypatch.setattr(sources, "_zip_names", refused)
+    monkeypatch.setattr(sources, "http_get", lambda url, *a, **k: {"servers": [
+        {"country": "Germany", "city": "Frankfurt", "hostname": "fra-a01.ipvanish.com", "ips": ["203.0.113.5"]}]})
+    prov = sources.IPVanish()
+    assert prov.fetch() == [("DE", "Germany", "203.0.113.5")] and prov.source == "gluetun fallback"
