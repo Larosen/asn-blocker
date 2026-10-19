@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.4 (2026-10-19)
+- **Check IP recognises VPN exits**: if a blocked address has listed VPN servers in the same /24 (IPv6 /64), the
+  dialog says it is probably a VPN exit and links to the provider. VPN exits often use a neighbouring IP of the listed
+  server (e.g. NordVPN Turkey), which *exact server IPs* does not cover.
+- NordVPN: the hint recommends *whole network* and still offers AS207137 for the remaining exits
+
 ## 0.6.3 (2026-10-19)
 - IPVanish: if configs.ipvanish.com refuses the download (it blocks some data center networks, e.g. GitHub's
   runners), the gluetun project's IPVanish server data is used instead of failing; `check-sources` shows which list

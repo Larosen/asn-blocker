@@ -200,8 +200,10 @@ Exemptions are cut out of every blocked range.
 - **VPN exemptions** – pick a provider and the countries whose servers should stay reachable. asn-blocker loads the
   provider's public server list and exempts exactly those server IPs. Optionally the surrounding `/24` (IPv6 `/64`)
   can be exempted instead; this is broader and may also exempt other servers at the same hosting provider.
-  Note: some VPNs use different addresses for incoming and outgoing traffic. NordVPN's outgoing IPs are mostly in
-  `AS207137`, which you can add as an exempt ASN.
+  Note: some VPNs use different addresses for incoming and outgoing traffic. NordVPN users usually connect from a
+  neighbouring address in the same `/24` as the listed server, so choose **whole network** for NordVPN; other NordVPN
+  exits are in `AS207137`, which you can add as an exempt ASN. If a VPN user is still blocked, **Check IP** points
+  out VPN servers listed next to their address.
   Sources: the providers' own server lists for NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN,
   Windscribe, IPVanish (with the gluetun data as fallback when IPVanish refuses the download), PrivadoVPN and
   OVPN; Proton VPN's exit IPs from the daily

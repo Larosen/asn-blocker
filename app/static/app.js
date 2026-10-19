@@ -314,9 +314,12 @@ const checkIp = guard(async (ip) => {
     ${asns ? `<h3>${t("Origin")}</h3><table><tbody>${asns}</tbody></table>${r.prefix ? `<p class="small muted">${t("Prefix")} ${esc(r.prefix)}</p>` : ""}` : r.global ? "" : `<p class="muted">${t("Not a public address.")}</p>`}
     ${Object.entries(r.ranges).map(([k, v]) => `<p>${t("Covered by {action}:", { action: `<b>${act(k)}</b>` })} <code>${v.map(esc).join(", ")}</code></p>`).join("")}
     ${r.exempt.length ? `<p>${t("Exempt via:")} ${r.exempt.map(esc).join(", ")}</p>` : ""}
+    ${r.status && r.vpn_near?.length ? `<div class="note warn small">${t("Probably a VPN exit address: listed {servers} servers are in the same network, and VPN exits often use a neighbouring IP. Select this country for the provider and choose “whole network (/24, /64)”.", { servers: r.vpn_near.map((x) => esc(`${x.name} ${x.country}`)).join(", ") })}
+      <a class="btn sm" data-close href="#/vpn/${esc(r.vpn_near[0].provider)}">${t("Open {name}", { name: esc(r.vpn_near[0].name) })}</a></div>` : ""}
     ${r.lookup_error ? `<p class="small muted">${esc(r.lookup_error)}</p>` : ""}
     <p class="small muted">${t("As of the last applied run.")}</p>`;
-  const v = await dialog({ title: r.ip, body, actions: [["watch", t("Watch this IP")], ["exempt", t("As exemption")], ["cancel", t("Close"), "primary"]] });
+  const v = await dialog({ title: r.ip, body, actions: [["watch", t("Watch this IP")], ["exempt", t("As exemption")], ["cancel", t("Close"), "primary"]],
+    onOpen: (d) => $$("[data-close]", d).forEach((a) => a.addEventListener("click", () => d.close("cancel"))) });
   if (v === "watch") { await api("/watch", { method: "POST", body: { ip: r.ip } }); toast(t("Watched IP added")); refreshOverview(); }
   if (v === "exempt") { await api("/exemptions", { method: "POST", body: { kind: "cidr", value: r.ip } }); toast(t("Exemption saved")); refreshOverview(); }
   const m = /^(ban|captcha):(\d+)$/.exec(v || "");
@@ -546,7 +549,7 @@ async function viewVpn(el, sel) {
         <button type="button" data-m="exact" aria-pressed="${p.mode === "exact"}">${t("exact server IPs")}</button>
         <button type="button" data-m="net" aria-pressed="${p.mode === "net"}">${t("whole network (/24, /64)")}</button></div></div>
       <div class="note warn small" id="netwarn" ${p.mode === "net" ? "" : "hidden"}>${t("VPN servers usually sit at hosting providers. A whole /24 also exempts other servers there – possibly exactly the ones you want to block.")}</div>
-      ${p.exit_asn ? `<div class="note small">${t("{name} exit IPs can differ from entry IPs and are usually in {asn}.", { name: esc(p.name), asn: `<code>AS${p.exit_asn}</code>` })} <button class="btn sm" id="exitasn">${t("Add AS{asn} as exempt ASN", { asn: p.exit_asn })}</button></div>` : ""}
+      ${p.exit_asn ? `<div class="note small">${t("{name} users often connect from an exit IP next to the listed server IP – choose “whole network” so the /24 is exempted. Other exits are in {asn}.", { name: esc(p.name), asn: `<code>AS${p.exit_asn}</code>` })} <button class="btn sm" id="exitasn">${t("Add AS{asn} as exempt ASN", { asn: p.exit_asn })}</button></div>` : ""}
     </div>
     <div class="box"><div class="row pad-sm" id="ctools"><input type="search" id="cf" placeholder="${t("Filter countries")}" aria-label="${t("Filter countries")}"><span class="spacer"></span>
       <button class="btn sm ghost" id="none">${t("None")}</button><span class="muted small" id="selcount" aria-live="polite"></span><button class="btn primary" id="save">${t("Save")}</button></div>

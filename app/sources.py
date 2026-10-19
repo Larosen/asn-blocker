@@ -313,7 +313,8 @@ def _resolve(host):
 
 class NordVPN(Provider):
     id, name, exit_asn = "nordvpn", "NordVPN", 207137
-    note = "api.nordvpn.com – entry IPs; exit IPs are usually in AS207137 (PacketHub)."
+    note = ("api.nordvpn.com – lists the servers' entry IPs. The exit IP often differs: a neighbouring address in the "
+            "same /24, or an address in AS207137 (PacketHub).")
 
     def fetch(self):
         # only the fields needed: ~1 MB instead of ~27 MB (the full list needed ~170 MB of memory to parse)
