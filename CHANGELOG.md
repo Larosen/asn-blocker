@@ -1,11 +1,18 @@
 # Changelog
 
+## 0.7.1 (2026-10-20)
+- **Fix (security):** 0.7.0 replaced a trusted proxy IP by whatever container name that IP had *now*. If the proxy
+  had been recreated and another container got its old IP (e.g. Watchtower), that container was trusted by name and
+  could send any username. A name is now only learned right after a valid sign-in through that IP, i.e. from the
+  proxy itself; a stale IP is never converted. **If you ran 0.7.0, check Settings → Access** and remove any
+  container that is not your proxy (`python -m app.cli untrust-proxy <name>`).
+- New `untrust-proxy` command
+
 ## 0.7.0 (2026-10-20)
 - **Trusted proxies by container name**: Settings, setup and the new `trust-proxy` command accept Docker container
   names (e.g. `gerbil`) besides IPs and CIDRs. A recreated proxy with a new IP keeps working.
-- **Existing installations**: trusted private proxy IPs are replaced by their container name automatically (checked
-  every 10 minutes via Docker's DNS, only if the name resolves back to that IP). This also closes a gap: a container
-  that later got the proxy's old IP was trusted and could send any username.
+- **Existing installations**: trusted private proxy IPs are replaced by their container name automatically (via
+  Docker's DNS, only if the name resolves back to that IP). Superseded in 0.7.1, see there.
 - **No access page** shows the source address of the request, its container name, whether the user header arrived
   and the names (never the values) of all received headers, plus the command to trust the proxy
 - `python -m app.cli trust-proxy <name|IP|CIDR>` fixes a changed proxy without redoing the setup

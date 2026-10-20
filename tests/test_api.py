@@ -543,21 +543,32 @@ def test_proxy_trusted_by_container_name_follows_new_ip(client, monkeypatch):
     assert client.get("/api/overview", headers={"Remote-User": "mallory"}).status_code == 401
 
 
-def test_trusted_proxy_ip_learns_its_container_name(monkeypatch):
+def test_proxy_name_is_learned_only_from_a_real_sign_in(client, monkeypatch):
+    import time as _t
+    db.put("auth_mode", "proxy")
+    db.put("auth_user_header", "Remote-User")
+    # the trusted IP now belongs to another container (proxy recreated, e.g. Watchtower got the old IP)
     db.put("trusted_proxies", ["172.18.0.11/32", "10.0.0.0/8"])
-    _fake_dns(monkeypatch, {"gerbil.pangolin": ["172.18.0.11"], "liar.example": ["9.9.9.9"]},
-              ptr={"172.18.0.11": "gerbil.pangolin"})
-    assert auth.learn_proxy_names() == ["gerbil.pangolin"]
-    # the IP is replaced: a container that later gets 172.18.0.11 is not trusted
+    _fake_dns(monkeypatch, {"watchtower.pangolin": ["172.18.0.11"], "gerbil.pangolin": ["172.18.0.7"]},
+              ptr={"172.18.0.11": "watchtower.pangolin", "172.18.0.7": "gerbil.pangolin"})
+    auth._learn_tried.clear()
+    peer = {"ip": "172.18.0.11"}
+    monkeypatch.setattr(auth, "peer_ip", lambda r: peer["ip"])
+    # requests without a user header (any container talking to the app) never teach a name
+    assert client.get("/api/overview").status_code == 401
+    _t.sleep(0.3)
+    assert db.get("trusted_proxies") == ["172.18.0.11/32", "10.0.0.0/8"]
+    # a real proxy sign-in from a trusted single IP ties trust to that container's name
+    db.put("trusted_proxies", ["172.18.0.7/32", "10.0.0.0/8"])
+    peer["ip"] = "172.18.0.7"
+    assert client.get("/api/overview", headers={"Remote-User": "alice"}).status_code == 200
+    for _ in range(50):
+        if "gerbil.pangolin" in db.get("trusted_proxies"):
+            break
+        _t.sleep(0.05)
     assert db.get("trusted_proxies") == ["gerbil.pangolin", "10.0.0.0/8"]
-    assert auth.learn_proxy_names() == []  # idempotent
-    db.put("trusted_proxies", ["8.8.8.8/32"])  # public addresses keep their IP entry
-    _fake_dns(monkeypatch, {"dns.google": ["8.8.8.8"]}, ptr={"8.8.8.8": "dns.google"})
-    assert auth.learn_proxy_names() == [] and db.get("trusted_proxies") == ["8.8.8.8/32"]
-    # a PTR name that does not resolve back to the IP is not trusted
-    db.put("trusted_proxies", ["172.18.0.12/32"])
-    _fake_dns(monkeypatch, {"liar.example": ["9.9.9.9"]}, ptr={"172.18.0.12": "liar.example"})
-    assert auth.learn_proxy_names() == [] and db.get("trusted_proxies") == ["172.18.0.12/32"]
+    # public proxy addresses keep their IP entry
+    assert auth.learn_proxy_name("8.8.8.8") is None
 
 
 def test_denied_page_shows_peer_and_header_names_but_no_values(client, monkeypatch):
@@ -581,3 +592,10 @@ def test_cli_trust_proxy(monkeypatch, capsys):
     assert cli.trust_proxy(["gerbil"]) and db.get("trusted_proxies") == ["172.18.0.11/32", "gerbil"]
     assert not cli.trust_proxy(["missing-container"]) and "does not resolve" in capsys.readouterr().out
     assert not cli.trust_proxy(["http://x"])
+
+
+def test_cli_untrust_proxy():
+    from app import cli
+    db.put("trusted_proxies", ["watchtower.pangolin", "gerbil.pangolin"])
+    assert cli.untrust_proxy(["watchtower.pangolin"]) and db.get("trusted_proxies") == ["gerbil.pangolin"]
+    assert not cli.untrust_proxy(["missing"])

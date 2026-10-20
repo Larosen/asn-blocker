@@ -140,13 +140,15 @@ reached through the Docker network.
 Setup checks that the current request actually meets these conditions, so you cannot lock yourself out by a typo.
 Requests that carry the username header twice are rejected. Do not add unauthenticated bypass rules for this route.
 
-Trusted proxies given as a private IP are replaced by their container name automatically (when Docker's DNS knows
-it), so a recreated proxy keeps working and a container that later gets the old IP is not trusted. If sign-in still
+A trusted proxy given as a private IP is replaced by its container name after the first sign-in through it (when
+Docker's DNS knows the name), so a recreated proxy keeps working and a container that later gets the old IP is not
+trusted. If sign-in still
 fails, the **No access** page shows the address the request came from, its container name and the header names it
 received; trust the proxy again with one command:
 
 ```bash
 docker exec asn-blocker python -m app.cli trust-proxy gerbil      # container name, IP or CIDR
+docker exec asn-blocker python -m app.cli untrust-proxy 172.18.0.11/32   # remove an outdated entry
 ```
 
 ### Built-in login
@@ -321,7 +323,7 @@ docker compose pull asn-blocker && docker compose up -d asn-blocker
 ```
 
 `:latest` is only published after the image passed a vulnerability scan, so automatic updaters such as Watchtower can
-follow it. To pin a version instead, use a release tag: `:0.7.0` (exact), `:0.7` (patch updates only) or the
+follow it. To pin a version instead, use a release tag: `:0.7.1` (exact), `:0.7` (patch updates only) or the
 immutable `:sha-<commit>` tag every build gets. To keep Watchtower away from a pinned container, add the label
 `com.centurylinklabs.watchtower.enable=false`.
 Changes are listed in the [changelog](CHANGELOG.md).
