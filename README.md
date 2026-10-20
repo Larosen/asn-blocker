@@ -127,8 +127,10 @@ reached through the Docker network.
 1. Attach asn-blocker to a Docker network your reverse proxy can reach, and point a route or resource at
    `http://asn-blocker:8080` with authentication enabled.
 2. Open the UI through that route and choose **Reverse proxy with SSO** during setup:
-   - **Trusted proxy IPs** – pre-filled with the address the request came from, i.e. your proxy. Keep it to that
-     single address. Everything in a trusted range may send any username, so never trust a whole shared Docker network.
+   - **Trusted proxies** – pre-filled with the container name of the proxy the request came from (e.g.
+     `gerbil.pangolin` for Pangolin), or its IP if no name is known. A container name keeps working when the proxy
+     container is recreated and gets a new IP. Everything you trust may send any username, so never trust a whole
+     shared Docker network.
    - **Header with username** – the header your proxy sets after a successful login. Use a header the proxy always
      strips from incoming requests and sets itself:
      - **Pangolin:** `Remote-User` (Badger 1.2.1 or newer removes client-supplied `Remote-*` headers)
@@ -138,8 +140,14 @@ reached through the Docker network.
 Setup checks that the current request actually meets these conditions, so you cannot lock yourself out by a typo.
 Requests that carry the username header twice are rejected. Do not add unauthenticated bypass rules for this route.
 
-If the proxy container gets a new IP address after being recreated, sign-in stops working; run
-`docker exec asn-blocker python -m app.cli reset-auth` and repeat the setup (or give the proxy a fixed IP).
+Trusted proxies given as a private IP are replaced by their container name automatically (when Docker's DNS knows
+it), so a recreated proxy keeps working and a container that later gets the old IP is not trusted. If sign-in still
+fails, the **No access** page shows the address the request came from, its container name and the header names it
+received; trust the proxy again with one command:
+
+```bash
+docker exec asn-blocker python -m app.cli trust-proxy gerbil      # container name, IP or CIDR
+```
 
 ### Built-in login
 
@@ -313,13 +321,16 @@ docker compose pull asn-blocker && docker compose up -d asn-blocker
 ```
 
 `:latest` is only published after the image passed a vulnerability scan, so automatic updaters such as Watchtower can
-follow it. To pin a build, use a release tag (e.g. `:0.6.0`) or the immutable `:sha-<commit>` tag every build gets.
+follow it. To pin a version instead, use a release tag: `:0.7.0` (exact), `:0.7` (patch updates only) or the
+immutable `:sha-<commit>` tag every build gets. To keep Watchtower away from a pinned container, add the label
+`com.centurylinklabs.watchtower.enable=false`.
 Changes are listed in the [changelog](CHANGELOG.md).
 
 ### Command line
 
 ```bash
-docker exec asn-blocker python -m app.cli reset-auth        # forgot the password / proxy changed: prints a new setup token
+docker exec asn-blocker python -m app.cli reset-auth        # forgot the password: prints a new setup token
+docker exec asn-blocker python -m app.cli trust-proxy NAME  # proxy changed: trust it by container name, IP or CIDR
 docker exec asn-blocker python -m app.cli protect [IP]      # protect an IP and its ASN (see Lockout protection)
 docker exec asn-blocker python -m app.cli check-sources     # test all external data sources
 ```
@@ -342,7 +353,7 @@ decision duration. Then delete the machine in CrowdSec:
 | Problem | Solution |
 |---|---|
 | No setup token in the log | Setup is already done. To start over: `docker exec asn-blocker python -m app.cli reset-auth` |
-| "Not signed in" behind the proxy | The proxy's IP changed or it does not send the username header – see [Behind a reverse proxy](#behind-a-reverse-proxy-with-sso-recommended) |
+| "No access" behind the proxy | The page shows the request's source address and the headers received. Source not trusted: `docker exec asn-blocker python -m app.cli trust-proxy <name shown>`. User header missing: check the proxy's SSO settings – see [Behind a reverse proxy](#behind-a-reverse-proxy-with-sso-recommended) |
 | "LAPI not reachable" | asn-blocker and CrowdSec must share a Docker network; use the container name in the URL (`http://crowdsec:8080`) |
 | "LAPI login failed" | Wrong machine ID or password; create new credentials with `cscli machines add` |
 | Run stopped by the sanity check | The dialog, the banner and the run under **Runs** show the reason; click **Apply anyway** if the change is expected |
