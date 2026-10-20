@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict
 
-from . import auth, crowdsec, db, netset, notify, selfprotect, sources
+from . import crowdsec, db, netset, notify, selfprotect, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
 # Never blocked, whatever a source says: private, loopback, link-local, CGNAT, documentation, multicast, reserved
@@ -470,12 +470,9 @@ def next_due():
 
 
 def scheduler():
-    last_prune = last_names = 0.0
+    last_prune = 0.0
     while True:
         try:
-            if db.get("trusted_proxies") and time.time() - last_names > 600:
-                last_names = time.time()
-                auth.learn_proxy_names()
             due = next_due()
             if due and due <= time.time() and not is_running():
                 run("apply", "scheduler")

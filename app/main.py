@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 
 
 @asynccontextmanager
@@ -179,8 +179,6 @@ def setup_auth(s: SetupAuth, request: Request, response: Response):
     if s.mode == "local":
         _set_cookie(response, request, auth.create_session(s.username))
     db.audit(user, "setup.auth", {"mode": s.mode})
-    if s.mode == "proxy":
-        threading.Thread(target=auth.learn_proxy_names, daemon=True).start()
     return {"ok": True}
 
 
@@ -693,7 +691,6 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
         if affects:
             db.bump_rev(c)
     db.audit(user, "settings.put", s.model_dump())
-    threading.Thread(target=auth.learn_proxy_names, daemon=True).start()
     return {"ok": True}
 
 

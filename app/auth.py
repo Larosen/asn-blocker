@@ -159,33 +159,54 @@ def reverse_name(ip: str, timeout: float = 2.0) -> str | None:
     return name
 
 
-def learn_proxy_names():
-    """Replaces every trusted private proxy IP by its Docker container name, so trust follows the proxy container
-    when it is recreated with a new IP – and is not inherited by whatever container gets the old IP. Only names
-    that resolve back to the trusted IP are used."""
-    entries = db.get("trusted_proxies") or []
-    learned = {}
-    for e in entries:
-        if _is_name(e):
-            continue
-        net = ipaddress.ip_network(e, strict=False)
-        if net.num_addresses != 1 or net.network_address.is_global:
-            continue
-        name = reverse_name(str(net.network_address))
-        if name:
-            learned[e] = name
-    if learned:
+_learning: set[str] = set()
+
+
+def learn_proxy_name(ip: str):
+    """Replaces the trusted single-IP entry of a proxy by its Docker container name, so trust follows the proxy
+    container when it is recreated with a new IP – and is not inherited by whatever container gets the old IP.
+    Only called right after this IP delivered a valid proxy sign-in: a trusted IP that is no longer the proxy
+    (e.g. another container got it after a restart) must never have its name learned."""
+    try:
+        a = ipaddress.ip_address(ip)
+        if a.is_global:
+            return None
+        name = reverse_name(str(a))
+        if not name:
+            return None
         with db.tx() as c:
-            current, out = db.get("trusted_proxies") or [], []
+            current = db.get("trusted_proxies") or []
+            entry = next((e for e in current if not _is_name(e) and ipaddress.ip_network(e, strict=False)
+                          == ipaddress.ip_network(f"{a}/{a.max_prefixlen}")), None)
+            if entry is None:
+                return None
+            out = []
             for e in current:
-                v = learned.get(e, e)
+                v = name if e == entry else e
                 if v not in out:
                     out.append(v)
             db.put("trusted_proxies", out, c)
-        db.audit("system", "proxy.names_learned", learned)
-        log.info("Trusted proxies now identified by container name: %s",
-                 ", ".join(f"{ip} -> {n}" for ip, n in learned.items()))
-    return list(learned.values())
+        db.audit("system", "proxy.name_learned", {"ip": str(a), "name": name})
+        log.info("Trusted proxy %s is now identified by its container name %s", a, name)
+        return name
+    finally:
+        with _names_lock:
+            _learning.discard(ip)
+
+
+_learn_tried: dict[str, float] = {}
+
+
+def _learn_in_background(ip: str):
+    now = time.time()
+    with _names_lock:
+        if ip in _learning or now - _learn_tried.get(ip, 0) < 600:
+            return
+        if len(_learn_tried) > 256:
+            _learn_tried.clear()
+        _learning.add(ip)
+        _learn_tried[ip] = now
+    threading.Thread(target=learn_proxy_name, args=(ip,), daemon=True).start()
 
 
 def _trusted(ip: str) -> bool:
@@ -334,9 +355,12 @@ def current_user(request: Request) -> str | None:
         if not _trusted(peer_ip(request)):
             return None
         values = request.headers.getlist(db.get("auth_user_header") or "")
-        if len(values) != 1:  # missing, or appended to a client-supplied value by the proxy
+        if len(values) != 1 or not values[0].strip():  # missing, or appended to a client-supplied value
             return None
-        return values[0].strip() or None
+        peer = peer_ip(request)
+        if ip_in(peer, [e for e in db.get("trusted_proxies") or [] if not _is_name(e)]):
+            _learn_in_background(peer)  # this IP is the proxy right now: tie trust to its container name
+        return values[0].strip()
     if mode == "local":
         token = request.cookies.get(SESSION_COOKIE)
         if not token:
