@@ -497,3 +497,87 @@ def test_only_the_latest_stopped_run_can_be_confirmed(client, monkeypatch):
             break
         time.sleep(0.05)
     assert calls == [None, (2, {"ban": 7})]
+
+
+def _fake_dns(monkeypatch, names, ptr=None):
+    """names: host -> [addresses]; ptr: address -> host"""
+    import socket
+    auth._names.clear()
+    auth._reverse.clear()
+
+    def getaddrinfo(host, *a, **k):
+        if host not in names:
+            raise socket.gaierror("not found")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in names[host]]
+
+    def gethostbyaddr(ip):
+        if not ptr or ip not in ptr:
+            raise socket.herror("not found")
+        return ptr[ip], [], [ip]
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(socket, "gethostbyaddr", gethostbyaddr)
+
+
+def test_normalize_proxy_accepts_names_ips_and_cidrs():
+    assert auth.normalize_proxy(" 172.18.0.7 ") == "172.18.0.7/32"
+    assert auth.normalize_proxy("172.18.0.0/16") == "172.18.0.0/16"
+    assert auth.normalize_proxy("Gerbil") == "gerbil"
+    assert auth.normalize_proxy("gerbil.pangolin") == "gerbil.pangolin"
+    for bad in ("1.2.3", "http://gerbil", "a b", "-x", ""):
+        with pytest.raises(ValueError):
+            auth.normalize_proxy(bad)
+
+
+def test_proxy_trusted_by_container_name_follows_new_ip(client, monkeypatch):
+    db.put("auth_mode", "proxy")
+    db.put("auth_user_header", "Remote-User")
+    db.put("trusted_proxies", ["gerbil"])
+    peer = {"ip": "172.18.0.11"}
+    monkeypatch.setattr(auth, "peer_ip", lambda r: peer["ip"])
+    _fake_dns(monkeypatch, {"gerbil": ["172.18.0.11"]})
+    assert client.get("/api/overview", headers={"Remote-User": "alice"}).status_code == 200
+    peer["ip"] = "172.18.0.7"  # proxy container recreated
+    _fake_dns(monkeypatch, {"gerbil": ["172.18.0.7"]})
+    assert client.get("/api/overview", headers={"Remote-User": "alice"}).status_code == 200
+    peer["ip"] = "172.18.0.9"  # another container on the network
+    assert client.get("/api/overview", headers={"Remote-User": "mallory"}).status_code == 401
+
+
+def test_trusted_proxy_ip_learns_its_container_name(monkeypatch):
+    db.put("trusted_proxies", ["172.18.0.11/32", "10.0.0.0/8"])
+    _fake_dns(monkeypatch, {"gerbil.pangolin": ["172.18.0.11"], "liar.example": ["9.9.9.9"]},
+              ptr={"172.18.0.11": "gerbil.pangolin"})
+    assert auth.learn_proxy_names() == ["gerbil.pangolin"]
+    # the IP is replaced: a container that later gets 172.18.0.11 is not trusted
+    assert db.get("trusted_proxies") == ["gerbil.pangolin", "10.0.0.0/8"]
+    assert auth.learn_proxy_names() == []  # idempotent
+    db.put("trusted_proxies", ["8.8.8.8/32"])  # public addresses keep their IP entry
+    _fake_dns(monkeypatch, {"dns.google": ["8.8.8.8"]}, ptr={"8.8.8.8": "dns.google"})
+    assert auth.learn_proxy_names() == [] and db.get("trusted_proxies") == ["8.8.8.8/32"]
+    # a PTR name that does not resolve back to the IP is not trusted
+    db.put("trusted_proxies", ["172.18.0.12/32"])
+    _fake_dns(monkeypatch, {"liar.example": ["9.9.9.9"]}, ptr={"172.18.0.12": "liar.example"})
+    assert auth.learn_proxy_names() == [] and db.get("trusted_proxies") == ["172.18.0.12/32"]
+
+
+def test_denied_page_shows_peer_and_header_names_but_no_values(client, monkeypatch):
+    db.put("auth_mode", "proxy")
+    db.put("auth_user_header", "Remote-User")
+    db.put("trusted_proxies", ["172.18.0.11/32"])
+    monkeypatch.setattr(auth, "peer_ip", lambda r: "172.18.0.7")
+    _fake_dns(monkeypatch, {"gerbil.pangolin": ["172.18.0.7"]}, ptr={"172.18.0.7": "gerbil.pangolin"})
+    r = client.get("/api/session", headers={"Remote-User": "alice-secret", "Remote-Email": "a@example.org"}).json()
+    d = r["denied"]
+    assert r["user"] is None and d["peer_ip"] == "172.18.0.7" and d["peer_name"] == "gerbil.pangolin"
+    assert d["peer_trusted"] is False and d["user_header_present"] is True
+    assert "remote-user" in d["headers"] and "remote-email" in d["headers"]
+    assert "alice-secret" not in str(r) and "a@example.org" not in str(r)
+
+
+def test_cli_trust_proxy(monkeypatch, capsys):
+    from app import cli
+    _fake_dns(monkeypatch, {"gerbil": ["172.18.0.7"]})
+    db.put("trusted_proxies", ["172.18.0.11/32"])
+    assert cli.trust_proxy(["gerbil"]) and db.get("trusted_proxies") == ["172.18.0.11/32", "gerbil"]
+    assert not cli.trust_proxy(["missing-container"]) and "does not resolve" in capsys.readouterr().out
+    assert not cli.trust_proxy(["http://x"])

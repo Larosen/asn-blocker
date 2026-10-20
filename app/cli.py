@@ -1,6 +1,7 @@
 """Maintenance:
   docker exec asn-blocker python -m app.cli reset-auth      reset sign-in (prints a new setup token)
   docker exec asn-blocker python -m app.cli check-sources   check all external data sources live
+  docker exec asn-blocker python -m app.cli trust-proxy NAME  trust a reverse proxy by container name, IP or CIDR
   docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect [IP] [--ip-only]
       permanently protect the IP and ASN of the current SSH connection (or the given IP) from blocks
   docker exec asn-blocker python -m app.cli protect --list  show protected IPs/ASNs and SSH sessions
@@ -126,6 +127,36 @@ def protect(args) -> bool:
     return True
 
 
+def trust_proxy(args) -> bool:
+    """Adds a reverse proxy (container name, IP or CIDR) whose user header and X-Forwarded-For are accepted."""
+    if len(args) != 1:
+        print("Usage: python -m app.cli trust-proxy <container name | IP | CIDR>   e.g. trust-proxy gerbil")
+        return False
+    try:
+        entry = auth.normalize_proxy(args[0])
+    except ValueError as e:
+        print(e)
+        return False
+    if auth._is_name(entry):
+        addrs = auth.resolve_name(entry)
+        if not addrs:
+            print(f"{entry} does not resolve from inside this container – is the proxy on a shared Docker network?")
+            return False
+        print(f"{entry} -> {', '.join(sorted(addrs))}")
+    with db.tx() as c:
+        current = db.get("trusted_proxies") or []
+        if entry not in current:
+            db.put("trusted_proxies", current + [entry], c)
+    db.audit("cli", "proxy.trust", {"entry": entry})
+    trusted = db.get("trusted_proxies")
+    print("Trusted proxies: " + ", ".join(trusted))
+    stale = [e for e in trusted if e != entry and not auth._is_name(e)]
+    if stale:
+        print(f"If {', '.join(stale)} no longer belongs to your proxy, remove it under Settings → Access: "
+              "whatever gets that address next would be trusted.")
+    return True
+
+
 def main():
     db.init()
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -135,6 +166,8 @@ def main():
             c.execute("DELETE FROM sessions")
         print(f"Sign-in reset. Open the web UI and complete the setup with this setup token:\n  {auth.new_setup_token()}\n"
               "(Any older setup token is no longer valid.)")
+    elif cmd == "trust-proxy":
+        sys.exit(0 if trust_proxy(sys.argv[2:]) else 1)
     elif cmd == "protect":
         sys.exit(0 if protect(sys.argv[2:]) else 1)
     elif cmd == "check-sources":

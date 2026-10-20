@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 (2026-10-20)
+- **Trusted proxies by container name**: Settings, setup and the new `trust-proxy` command accept Docker container
+  names (e.g. `gerbil`) besides IPs and CIDRs. A recreated proxy with a new IP keeps working.
+- **Existing installations**: trusted private proxy IPs are replaced by their container name automatically (checked
+  every 10 minutes via Docker's DNS, only if the name resolves back to that IP). This also closes a gap: a container
+  that later got the proxy's old IP was trusted and could send any username.
+- **No access page** shows the source address of the request, its container name, whether the user header arrived
+  and the names (never the values) of all received headers, plus the command to trust the proxy
+- `python -m app.cli trust-proxy <name|IP|CIDR>` fixes a changed proxy without redoing the setup
+- Upgrade note: if the proxy already got a new IP before updating, run `trust-proxy` once (the page shows the command)
+
 ## 0.6.4 (2026-10-19)
 - **Check IP recognises VPN exits**: if a blocked address has listed VPN servers in the same /24 (IPv6 /64), the
   dialog says it is probably a VPN exit and links to the provider. VPN exits often use a neighbouring IP of the listed

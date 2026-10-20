@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.6.4"
+VERSION = "0.7.0"
 
 
 @asynccontextmanager
@@ -121,9 +121,11 @@ def healthz():
 
 @pub.get("/session")
 def session(request: Request):
-    user = auth.current_user(request)
-    return {"setup_required": not db.get("auth_mode"), "auth_mode": db.get("auth_mode"), "user": user,
-            "peer_ip": auth.peer_ip(request) if not user and not db.get("auth_mode") else None,
+    user, mode = auth.current_user(request), db.get("auth_mode")
+    peer = auth.peer_ip(request) if not user and not mode else None
+    return {"setup_required": not mode, "auth_mode": mode, "user": user,
+            "peer_ip": peer, "peer_name": auth.reverse_name(peer, 1.0) if peer else None,
+            "denied": auth.denied_details(request) if mode == "proxy" and not user else None,
             "crowdsec_configured": bool(db.get("crowdsec_mode")) if user else None, "version": VERSION}
 
 
@@ -142,8 +144,8 @@ class SetupAuth(BaseModel):
 
     @field_validator("trusted_proxies")
     @classmethod
-    def _cidrs(cls, v):
-        return [str(ipaddress.ip_network(x.strip(), strict=False)) for x in v if x.strip()]
+    def _proxies(cls, v):
+        return [auth.normalize_proxy(x) for x in v if x.strip()]
 
 
 @pub.post("/setup/auth")
@@ -153,7 +155,7 @@ def setup_auth(s: SetupAuth, request: Request, response: Response):
     auth.check_setup_token(s.token)
     if s.mode == "proxy":
         if not s.trusted_proxies:
-            raise HTTPException(422, "At least one trusted proxy (IP/CIDR) is required")
+            raise HTTPException(422, "At least one trusted proxy (container name, IP or CIDR) is required")
         peer = auth.peer_ip(request)
         if not auth.ip_in(peer, s.trusted_proxies) or not request.headers.get(s.user_header):
             raise HTTPException(422, f"This request came from {peer} "
@@ -177,6 +179,8 @@ def setup_auth(s: SetupAuth, request: Request, response: Response):
     if s.mode == "local":
         _set_cookie(response, request, auth.create_session(s.username))
     db.audit(user, "setup.auth", {"mode": s.mode})
+    if s.mode == "proxy":
+        threading.Thread(target=auth.learn_proxy_names, daemon=True).start()
     return {"ok": True}
 
 
@@ -670,8 +674,8 @@ class Settings(BaseModel):
 
     @field_validator("trusted_proxies")
     @classmethod
-    def _cidrs(cls, v):
-        return [str(ipaddress.ip_network(x.strip(), strict=False)) for x in v if x.strip()]
+    def _proxies(cls, v):
+        return [auth.normalize_proxy(x) for x in v if x.strip()]
 
 
 @api.put("/settings")
@@ -689,6 +693,7 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
         if affects:
             db.bump_rev(c)
     db.audit(user, "settings.put", s.model_dump())
+    threading.Thread(target=auth.learn_proxy_names, daemon=True).start()
     return {"ok": True}
 
 

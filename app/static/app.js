@@ -117,8 +117,8 @@ function renderSetup() {
       <option value="proxy">${t("Reverse proxy with SSO (Pangolin, Authelia, Authentik …)")}</option>
       <option value="local">${t("Built-in login with password")}</option></select></label>
     <div data-mode="proxy">
-      <label class="field"><span>${t("Trusted proxy IPs")}</span><input type="text" name="trusted" class="mono" value="${esc(session.peer_ip || "")}">
-        <small>${t("IP or CIDR of the reverse proxy, comma separated. This request came from {ip}.", { ip: `<code>${esc(session.peer_ip)}</code>` })}</small></label>
+      <label class="field"><span>${t("Trusted proxies")}</span><input type="text" name="trusted" class="mono" value="${esc(session.peer_name || session.peer_ip || "")}">
+        <small>${t("Container name (recommended – it keeps working when the proxy gets a new IP), IP or CIDR of the reverse proxy, comma separated. This request came from {ip}.", { ip: `<code>${esc(session.peer_ip)}</code>${session.peer_name ? ` (<code>${esc(session.peer_name)}</code>)` : ""}` })}</small></label>
       <label class="field"><span>${t("Header with username")}</span><input type="text" name="header" class="mono" value="Remote-User">
         <small>${t("The proxy must set this header after a successful SSO login.")}</small></label>
     </div>
@@ -159,10 +159,20 @@ function renderLogin() {
 }
 
 function renderProxyDenied() {
+  const d = session.denied || {};
+  const who = d.peer_name ? `${d.peer_ip} (${d.peer_name})` : d.peer_ip || "?";
+  const fix = !d.peer_trusted && d.peer_ip
+    ? `<p class="small">${t("If {ip} is your reverse proxy (e.g. it got a new IP after its container was recreated), trust it:", { ip: `<code>${esc(who)}</code>` })}<br>
+      <code>docker exec asn-blocker python -m app.cli trust-proxy ${esc(d.peer_name || d.peer_ip)}</code></p>` : "";
   $("#root").className = "";
   $("#root").innerHTML = `<main class="center"><div class="card"><h1>${t("No access")}</h1>
     <p class="lead">${t("This instance expects authentication via the reverse proxy (SSO). The request did not come through a trusted proxy or lacked the user header.")}</p>
-    <p class="muted small">${t("Reset:")} <code>docker exec asn-blocker python -m app.cli reset-auth</code>, ${t("then restart the container.")}</p></div></main>`;
+    <div class="note small"><ul>
+      <li>${t("Request from")} <code>${esc(who)}</code> – ${d.peer_trusted ? t("trusted proxy") : `<b>${t("not a trusted proxy")}</b>`}</li>
+      <li>${t("User header")}: ${d.user_header_present ? t("present") : `<b>${t("missing")}</b>`}</li>
+      <li>${t("Headers received (names only):")} <code>${esc((d.headers || []).join(", "))}</code></li></ul></div>
+    ${fix}
+    <p class="muted small">${t("Start over:")} <code>docker exec asn-blocker python -m app.cli reset-auth</code></p></div></main>`;
 }
 
 // --- Shell ---------------------------------------------------------------------------------------
@@ -690,7 +700,8 @@ const auditName = (a) => ({ "asn.put": t("ASN rule saved"), "asn.delete": t("ASN
   "watch.delete": t("Watched IP removed"), "settings.put": t("Settings changed"), "notify.put": t("Notifications changed"), "crowdsec.put": t("CrowdSec connection changed"),
   "crowdsec.cleanup": t("Old decisions removed"), "run.apply": t("Run started"), login: t("Signed in"), "setup.auth": t("Initial setup"),
   "account.password": t("Password changed"), import: t("Configuration imported"),
-  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed") }[a] ?? a);
+  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed"),
+  "proxy.trust": t("Proxy trusted"), "proxy.names_learned": t("Proxy container name learned") }[a] ?? a);
 async function viewAudit(el) {
   const rows = await api("/audit");
   el.innerHTML = `<div class="box table-wrap">${rows.length ? `<table><thead><tr><th>${t("Time")}</th><th>${t("User")}</th><th>${t("Action")}</th><th>${t("Details")}</th></tr></thead><tbody>
@@ -730,7 +741,7 @@ async function viewSettings(el) {
     <label class="check"><input type="checkbox" name="include_ipv6" ${s.include_ipv6 ? "checked" : ""}><span>${t("Also block IPv6 prefixes")}</span></label>
     <h3>${t("Access")}</h3>
     <div class="grid2"><label class="field"><span>${t("Trusted proxies")}</span><input type="text" name="trusted_proxies" class="mono" value="${esc((s.trusted_proxies || []).join(", "))}">
-      <small>${s.auth_mode === "proxy" ? t("X-Forwarded-For and the user header are only accepted from here.") : t("X-Forwarded-For is only accepted from here.")}</small></label>
+      <small>${s.auth_mode === "proxy" ? t("Container names, IPs or CIDRs. X-Forwarded-For and the user header are only accepted from here.") : t("Container names, IPs or CIDRs. X-Forwarded-For is only accepted from here.")}</small></label>
     <label class="field"><span>${t("User header")}</span><input type="text" name="auth_user_header" class="mono" value="${esc(s.auth_user_header)}" ${s.auth_mode === "proxy" ? "" : "disabled"}></label></div>
     <button class="btn primary">${t("Save")}</button></form></div>
 
