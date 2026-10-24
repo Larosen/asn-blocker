@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (2026-10-24) – new interface
+## 0.7.2 (2026-10-24) – new interface
 - **New design system**: calm, near-monochrome surfaces with hairlines instead of shadows; colours in OKLCH derived
   from three inputs (neutral base, one accent, contrast), so Light, Dark and OLED stay consistent; Geist Sans/Mono
   (bundled, no external requests) with mono labels; dimmed sidebar, content first; glass only for the control layer
