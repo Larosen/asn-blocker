@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 (2026-10-24) – new interface
+- **New design system**: calm, near-monochrome surfaces with hairlines instead of shadows; colours in OKLCH derived
+  from three inputs (neutral base, one accent, contrast), so Light, Dark and OLED stay consistent; Geist Sans/Mono
+  (bundled, no external requests) with mono labels; dimmed sidebar, content first; glass only for the control layer
+  (top bar, apply bar, dialogs)
+- **Map of the IPv4 address space** on the overview: every /16 network as one cell along a Hilbert curve, blocked
+  and captcha networks light up; hover shows the network and its share
+- **Command palette** (Ctrl/⌘+K): jump to any view, apply, preview, check an IP, search ASNs, change the theme
+- Motion with purpose only (short fades, the map's reveal); `prefers-reduced-motion`, `prefers-reduced-transparency`
+  and `prefers-contrast: more` are honoured; WCAG 2.2 AA contrast in all themes (axe: 0 violations)
+
 ## 0.7.1 (2026-10-20)
 - **Fix (security):** 0.7.0 replaced a trusted proxy IP by whatever container name that IP had *now*. If the proxy
   had been recreated and another container got its old IP (e.g. Watchtower), that container was trusted by name and

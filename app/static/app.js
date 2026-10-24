@@ -1,5 +1,6 @@
 // asn-blocker UI – no build step, no inline scripts (CSP).
 import { t } from "./text.js";
+import { coverage, mountAtlas } from "./atlas.js";
 
 const LOCALE = "en-GB";
 const locale = () => LOCALE;
@@ -94,7 +95,8 @@ function applyTheme() {
   const v = theme();
   if (v === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = v;
   const dark = v === "dark" || v === "oled" || (v === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
-  $('meta[name="theme-color"]')?.setAttribute("content", v === "oled" ? "#000000" : dark ? "#0c0c0e" : "#fafafa");
+  $('meta[name="theme-color"]')?.setAttribute("content", v === "oled" ? "#000000" : dark ? "#0f1013" : "#f6f6f7");
+  atlas?.redraw();
 }
 const themeSwitch = () => `<button type="button" class="btn ghost sm" id="theme" title="${t("Change theme")}">${t("Theme: {name}", { name: THEME_NAMES[theme()] })}</button>`;
 const bindTheme = () => $("#theme")?.addEventListener("click", (e) => {
@@ -190,15 +192,96 @@ function renderShell() {
     </aside>
     <div class="main"><div id="banners" role="region" aria-label="${t("Notices")}"></div>
       <header class="top"><h1 id="title"></h1>
+        <button type="button" class="cmdk-btn" id="cmdk-open" aria-keyshortcuts="${IS_MAC ? "Meta+K" : "Control+K"}"><span class="lbl">${t("Search or jump to …")}</span><kbd>${IS_MAC ? "⌘" : "Ctrl"}</kbd><kbd>K</kbd></button>
         <form class="ipcheck" id="ipcheck" role="search"><input type="search" name="ip" placeholder="${t("Check IP …")}" aria-label="${t("Check IP")}" autocomplete="off"></form></header>
       <main class="content" id="view"></main></div></div>
     <div id="applybar" role="region" aria-label="${t("Changes")}" aria-live="polite"></div>`;
   bindTheme();
   $("#logout")?.addEventListener("click", guard(async (e) => { e.preventDefault(); await api("/logout", { method: "POST" }); boot(); }));
   $("#ipcheck").onsubmit = (e) => { e.preventDefault(); const ip = e.target.ip.value.trim(); if (ip) checkIp(ip); };
+  $("#cmdk-open").onclick = openPalette;
   window.onhashchange = route;
   route();
   refreshOverview();
+}
+
+// --- Command palette (⌘K / Ctrl+K): every main action from the keyboard ------------------------------------
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const IP_RE = /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-f:]*:[0-9a-f:.]+)$/i;
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k" && session?.user) { e.preventDefault(); openPalette(); }
+});
+
+function goSearch(q) {
+  location.hash = "#/asns";
+  const fill = () => { const i = $("#q"); if (!i) return false; i.value = q; i.dispatchEvent(new Event("input")); i.focus(); return true; };
+  if (!fill()) { const iv = setInterval(() => fill() && clearInterval(iv), 60); setTimeout(() => clearInterval(iv), 3000); }
+}
+function clickWhenReady(sel) {
+  const iv = setInterval(() => { const b = $(sel); if (b) { clearInterval(iv); b.click(); } }, 60);
+  setTimeout(() => clearInterval(iv), 3000);
+}
+
+function paletteItems(q) {
+  const items = VIEWS.map((v) => ({ group: t("Go to"), label: viewName(v), run: () => (location.hash = "#/" + v) }));
+  items.push(
+    { group: t("Actions"), label: t("Apply rules"), hint: t("sync with CrowdSec"), run: () => startRun("apply") },
+    { group: t("Actions"), label: t("Preview"), hint: t("compute without changing anything"), run: () => startRun("plan") },
+    { group: t("Actions"), label: t("Suggested ASN lists"), run: () => { location.hash = "#/asns"; clickWhenReady("#suggest-btn"); } },
+    { group: t("Actions"), label: t("Paste ASN list"), run: () => { location.hash = "#/asns"; clickWhenReady("#paste"); } },
+    { group: t("Actions"), label: t("Change theme"), hint: THEME_NAMES[theme()], run: () => $("#theme")?.click() },
+  );
+  if (session.auth_mode === "local") items.push({ group: t("Actions"), label: t("Sign out"), run: () => $("#logout")?.click() });
+  const s = q.trim();
+  const dyn = [];
+  if (IP_RE.test(s)) dyn.push({ group: t("Search"), label: t("Check IP {ip}", { ip: s }), hint: t("status, network, rules"), run: () => checkIp(s) },
+    { group: t("Search"), label: t("Find the network of {ip}", { ip: s }), run: () => goSearch(s) });
+  else if (s.length >= 2) dyn.push({ group: t("Search"), label: t("Search ASNs for “{q}”", { q: s }), run: () => goSearch(s) });
+  const needle = s.toLowerCase();
+  const fixed = IP_RE.test(s) ? [] : items.filter((i) => !needle || i.label.toLowerCase().includes(needle) || i.group.toLowerCase().includes(needle));
+  return IP_RE.test(s) ? dyn : [...fixed, ...dyn];  // matching commands first, free-text search last
+}
+
+function openPalette() {
+  let dlg = $("#cmdk");
+  if (dlg?.open) return;
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "cmdk";
+    dlg.setAttribute("aria-label", t("Command palette"));
+    dlg.innerHTML = `<div class="cmdk-input"><input type="text" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list"
+        aria-label="${t("Search or jump to")}" placeholder="${t("Type a command, a view, an ASN or an IP …")}" autocomplete="off" spellcheck="false"></div>
+      <ul class="cmdk-list" id="cmdk-list" role="listbox" aria-label="${t("Results")}"></ul>
+      <div class="cmdk-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd>${t("select")}</span><span><kbd>↵</kbd>${t("run")}</span><span><kbd>esc</kbd>${t("close")}</span></div>`;
+    document.body.append(dlg);
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });  // click on the backdrop
+  }
+  const input = $("input", dlg), list = $("#cmdk-list", dlg);
+  let items = [], sel = 0;
+  const render = () => {
+    items = paletteItems(input.value);
+    sel = Math.min(sel, Math.max(0, items.length - 1));
+    let group = "";
+    list.innerHTML = items.length ? items.map((it, i) => {
+      const head = it.group !== group ? `<li class="cmdk-group eyebrow" role="presentation">${esc((group = it.group))}</li>` : "";
+      return `${head}<li class="cmdk-item" role="option" id="cmdk-${i}" data-i="${i}" aria-selected="${i === sel}">${esc(it.label)}${it.hint ? `<span class="hint">${esc(it.hint)}</span>` : ""}</li>`;
+    }).join("") : `<li class="empty" role="presentation">${t("No matches")}</li>`;
+    input.setAttribute("aria-activedescendant", items.length ? `cmdk-${sel}` : "");
+    $(`#cmdk-${sel}`, list)?.scrollIntoView({ block: "nearest" });
+  };
+  const run = (i) => { const it = items[i]; if (!it) return; dlg.close(); it.run(); };
+  input.value = ""; sel = 0;
+  input.oninput = () => { sel = 0; render(); };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); sel = (sel + 1) % Math.max(1, items.length); render(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); sel = (sel - 1 + items.length) % Math.max(1, items.length); render(); }
+    else if (e.key === "Enter") { e.preventDefault(); run(sel); }
+  };
+  list.onclick = (e) => { const li = e.target.closest("[data-i]"); if (li) run(+li.dataset.i); };
+  list.onmousemove = (e) => { const li = e.target.closest("[data-i]"); if (li && +li.dataset.i !== sel) { sel = +li.dataset.i; render(); } };
+  render();
+  dlg.showModal();
+  input.focus();
 }
 
 async function refreshOverview() {
@@ -340,16 +423,27 @@ const checkIp = guard(async (ip) => {
 });
 
 // --- Overview ----------------------------------------------------------------------------------------------
+// --- Overview: the address-space map is the one signature element; everything else stays quiet ---------------
+let atlas = null, atlasData = null;
 async function viewOverview(el) {
   const [o, watch] = await Promise.all([api("/overview"), api("/watch")]);
   ov = o;
   const la = o.last_apply;
-  el.innerHTML = `<div class="section"><div class="stats">
-      <div class="stat"><div class="label">${t("Blocked")}</div><div class="value">${fmtNum(o.applied.ban)}</div><div class="sub">${t("ranges active")}</div></div>
-      <div class="stat"><div class="label">${t("Captcha")}</div><div class="value">${fmtNum(o.applied.captcha)}</div><div class="sub">${t("ranges active")}</div></div>
-      <div class="stat"><div class="label">${t("Last run")}</div><div class="value small">${la ? `<span class="dot ${la.status}"></span>${runStatus(la.status)}` : "–"}</div><div class="sub">${la ? ago(la.started_at) + " · " + esc(la.triggered_by) : t("never applied")}</div></div>
-      <div class="stat"><div class="label">${t("Next run")}</div><div class="value small">${o.next_run ? ago(o.next_run) : "–"}</div><div class="sub">${o.next_run ? fmtTime(o.next_run) : la ? t("CrowdSec not connected") : t("starts after the first apply")} · ${t("every {h} h", { h: o.interval_hours })}</div></div>
-    </div></div>
+  el.innerHTML = `<section class="section box atlas" aria-labelledby="atlas-h">
+      <div class="atlas-stage" id="atlas-stage" role="img" aria-label="${t("Map of the IPv4 address space, one cell per /16 network; loading")}"></div>
+      <div class="atlas-side">
+        <span class="eyebrow">${t("IPv4 address space")}</span>
+        <h2 id="atlas-h">${t("Loading the map …")}</h2>
+        <p id="atlas-p">${t("Every cell is one /16 network, laid out along a Hilbert curve so that neighbouring networks stay together.")}</p>
+        <div class="atlas-figures">
+          <div><div class="eyebrow">${t("Blocked")}</div><div class="v">${fmtNum(o.applied.ban)}</div><div class="small muted">${t("ranges active")}</div></div>
+          <div><div class="eyebrow">${t("Captcha")}</div><div class="v">${fmtNum(o.applied.captcha)}</div><div class="small muted">${t("ranges active")}</div></div>
+          <div><div class="eyebrow">${t("Last run")}</div><div class="v small">${la ? `<span class="dot ${la.status}"></span>${runStatus(la.status)}` : "–"}</div><div class="small muted">${la ? ago(la.started_at) + " · " + esc(la.triggered_by) : t("never applied")}</div></div>
+          <div><div class="eyebrow">${t("Next run")}</div><div class="v small">${o.next_run ? ago(o.next_run) : "–"}</div><div class="small muted">${o.next_run ? fmtTime(o.next_run) : la ? t("CrowdSec not connected") : t("starts after the first apply")} · ${t("every {h} h", { h: o.interval_hours })}</div></div>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i class="l-ban"></i>${t("Blocked")}</span><span><i class="l-cap"></i>${t("Captcha")}</span><span><i class="l-free"></i>${t("Not blocked")}</span><span><i class="l-res"></i>${t("Reserved")}</span></div>
+      </div>
+    </section>
     <div class="grid2">
       <div class="section"><div class="section-head"><h2>${t("Rules")}</h2></div><div class="box"><table><tbody>
         <tr><td><a href="#/asns">${t("ASNs")}</a></td><td class="num mono">${o.rules.asns}</td></tr>
@@ -363,6 +457,27 @@ async function viewOverview(el) {
       </div></div>
     </div>
     ${o.me ? `<p class="small muted">${t("Your IP:")} <code>${esc(o.me.ip)}</code> – ${o.me.status ? act(o.me.status) : t("not affected")}</p>` : ""}`;
+  loadAtlas(la?.id ?? 0);
+}
+
+async function loadAtlas(key) {
+  atlas?.stop(); atlas = null;
+  if (atlasData?.key !== key) {
+    const [ban, captcha] = await Promise.all([api("/ranges/ban.txt"), api("/ranges/captcha.txt")]);
+    atlasData = { key, ban: coverage(ban), captcha: coverage(captcha) };
+  }
+  const stage = $("#atlas-stage");
+  if (!stage) return;  // navigated away meanwhile
+  const { ban, captcha } = atlasData;
+  const share = (n) => (n / 2 ** 32 * 100).toLocaleString(locale(), { maximumFractionDigits: n / 2 ** 32 < 0.001 ? 3 : 1 });
+  $("#atlas-h").textContent = ban.addresses || captcha.addresses
+    ? t("{p} % of IPv4 blocked", { p: share(ban.addresses) }) : t("Nothing blocked yet");
+  $("#atlas-p").textContent = ban.addresses || captcha.addresses
+    ? t("{b} addresses blocked and {c} behind a captcha. Every cell is one /16 network, laid out along a Hilbert curve so that neighbouring networks stay together.",
+      { b: fmtAddr(ban.addresses), c: fmtAddr(captcha.addresses) }) + (ban.v6 + captcha.v6 ? " " + t("IPv6 ranges ({n}) are not shown.", { n: fmtNum(ban.v6 + captcha.v6) }) : "")
+    : t("Add ASN rules and apply them – blocked networks then light up on this map of the IPv4 address space.");
+  stage.setAttribute("aria-label", t("Map of the IPv4 address space: {p} % blocked, {c} % behind a captcha.", { p: share(ban.addresses), c: share(captcha.addresses) }));
+  atlas = mountAtlas(stage, atlasData, { ban: t("Block"), captcha: t("Captcha"), free: t("not blocked"), reserved: t("reserved") });
 }
 const statusTag = (s) => (!s ? `<span class="muted small">${t("not checked yet")}</span>` : s === "ban" || s === "captcha" ? `<span class="tag ${s}">${act(s)}</span>` : `<span class="tag ok">${t("clear")}</span>`);
 
@@ -521,12 +636,12 @@ async function viewAsns(el) {
     const card = (l) => {
       const fresh = l.asns.filter((a) => !a.present && !a.protected).length;
       return `<div class="box pad sugg"><div class="row"><h3>${esc(t(l.title))}</h3><span class="spacer"></span>
-        <button class="btn sm primary" value="${esc(l.id)}" ${fresh ? "" : "disabled"}>${fresh ? t("Review {n} ASNs", { n: fresh }) : t("All added")}</button></div>
+        <button class="btn sm" value="${esc(l.id)}" ${fresh ? "" : "disabled"}>${fresh ? t("Review {n} ASNs", { n: fresh }) : t("All added")}</button></div>
         <p class="small">${esc(t(l.description))}</p><div class="note warn small">${esc(t(l.warning))}</div>
         <p class="small muted mono">${l.asns.map((a) => `AS${a.asn} ${esc(a.note)}`).join(" · ")}</p></div>`;
     };
     const spam = `<div class="box pad sugg"><div class="row"><h3>Spamhaus ASN-DROP</h3><span class="spacer"></span>
-      <button class="btn sm primary" value="spamhaus" ${sg.spamhaus ? "disabled" : ""}>${sg.spamhaus ? t("Active") : t("Block automatically")}</button></div>
+      <button class="btn sm" value="spamhaus" ${sg.spamhaus ? "disabled" : ""}>${sg.spamhaus ? t("Active") : t("Block automatically")}</button></div>
       <p class="small">${t("Networks run entirely by cybercriminals, maintained by Spamhaus and refreshed on every run. A safe first step.")}</p></div>`;
     const v = await dialog({ title: t("Suggested lists"), body: `<p class="small muted">${t("Not sure where to start? Pick a list – you review every ASN before anything is added.")}</p>${spam}${sg.lists.map(card).join("")}`,
       actions: [["cancel", t("Close")]] });
