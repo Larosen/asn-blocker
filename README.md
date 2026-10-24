@@ -8,7 +8,8 @@ Blocking them IP by IP never ends; blocking them by ASN (Autonomous System Numbe
 catches every address the network announces. asn-blocker looks up the current prefixes of the ASNs you choose,
 removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *captcha* decisions.
 
-- **Web UI** to search ASNs by number or name and choose *Block* or *Captcha* per ASN
+- **Web UI** to search ASNs by number, name or IP and choose *Block* or *Captcha* per ASN, with a live map of the
+  blocked IPv4 address space and a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>) for every action
 - **Automatic refresh** of the ranges (every 48 h by default), with a preview of every change
 - **Exemptions** for individual IPs/networks, whole ASNs, and the server locations of VPN providers
   (20 providers, including NordVPN, Proton VPN, Mullvad, Surfshark, ExpressVPN, PureVPN, CyberGhost, Windscribe and
@@ -16,7 +17,7 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
 - **Lockout protection** for your own connection and active SSH sessions
 - **One container**, no Docker socket, no environment variables; everything is configured in the UI
 
-![Overview: active ranges, last and next run, watched IPs](docs/screenshots/overview.png)
+![Overview: map of the IPv4 address space with blocked networks, active ranges, last and next run](docs/screenshots/overview.png)
 
 ## Contents
 
@@ -402,4 +403,4 @@ DATA_DIR=./data uvicorn app.main:app --reload --port 8080
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The bundled Geist fonts are © Vercel, licensed under the [SIL Open Font License](app/static/fonts/OFL-Geist.txt).
