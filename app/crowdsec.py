@@ -12,6 +12,7 @@ import httpx
 from . import db
 
 BATCH = 500
+ALERT_LIMIT = 5000  # newest alerts read per collection; bounds memory on very busy hosts
 MANUAL_ORIGINS = ("cscli", "cscli-import")  # decisions added by hand or by scripts via cscli
 _DUR = re.compile(r"(-?[0-9]{1,12}(?:\.[0-9]{1,9})?)(h|ms|m|s|us|µs|ns)")
 _UNIT = {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
@@ -122,6 +123,11 @@ class Lapi:
         for i in ids:
             self._req("DELETE", f"/decisions/{i}")
 
+    def alerts(self, since_hours=168, limit=ALERT_LIMIT):
+        """Recent alerts of CrowdSec's own detections (community blocklists excluded)."""
+        return self._req("GET", "/alerts", params={"since": f"{int(since_hours)}h", "include_capi": "false",
+                                                  "limit": limit}) or []
+
     def delete_scenario(self, reason):
         """Only decisions created via cscli (add/import) – never CrowdSec's own detections or blocklists."""
         return sum(int((self._req("DELETE", "/decisions", params={"scenario": reason, "origin": o}) or {})
@@ -176,6 +182,13 @@ class DockerCli:
     def delete_ids(self, ids):
         for i in ids:
             self._exec("cscli", "decisions", "delete", "--id", str(i))
+
+    def alerts(self, since_hours=168, limit=ALERT_LIMIT):
+        out = self._exec("cscli", "alerts", "list", "--since", f"{int(since_hours)}h", "-l", str(limit), "-o", "json")
+        try:
+            return json.loads(out or "null") or []
+        except ValueError as e:
+            raise CrowdSecError("cscli alerts list: invalid JSON") from e
 
     def delete_scenario(self, reason):
         n = 0

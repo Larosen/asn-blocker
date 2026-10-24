@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict
 
-from . import crowdsec, db, netset, notify, selfprotect, sources
+from . import attackers, crowdsec, db, netset, notify, selfprotect, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
 # Never blocked, whatever a source says: private, loopback, link-local, CGNAT, documentation, multicast, reserved
@@ -470,7 +470,7 @@ def next_due():
 
 
 def scheduler():
-    last_prune = 0.0
+    last_prune = last_attackers = 0.0
     while True:
         try:
             due = next_due()
@@ -479,6 +479,13 @@ def scheduler():
             if time.time() - last_prune > 86400:
                 db.prune()
                 last_prune = time.time()
+            if db.get("crowdsec_mode") and time.time() - (db.get("attackers_updated") or 0) > 3600 \
+                    and time.time() - last_attackers > 900:
+                last_attackers = time.time()
+                try:
+                    attackers.collect()
+                except (crowdsec.CrowdSecError, sources.SourceError) as e:
+                    log_.warning("Attackers: %s", e)
             updated = db.get("asn_names_updated") or 0
             if time.time() - updated > 7 * 86400:
                 try:

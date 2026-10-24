@@ -178,8 +178,8 @@ function renderProxyDenied() {
 }
 
 // --- Shell ---------------------------------------------------------------------------------------
-const VIEWS = ["overview", "asns", "vpn", "exemptions", "runs", "audit", "settings"];
-const viewName = (v) => ({ overview: t("Overview"), asns: t("ASNs"), vpn: t("VPN exemptions"), exemptions: t("Exemptions"),
+const VIEWS = ["overview", "asns", "attackers", "vpn", "exemptions", "runs", "audit", "settings"];
+const viewName = (v) => ({ overview: t("Overview"), asns: t("ASNs"), attackers: t("Attackers"), vpn: t("VPN exemptions"), exemptions: t("Exemptions"),
   runs: t("Runs"), audit: t("Log"), settings: t("Settings") }[v]);
 let ov = null, pollTimer = null, runPoll = null;
 
@@ -393,7 +393,7 @@ function route() {
   clearTimeout(runPoll);
   const el = $("#view");
   el.innerHTML = `<p class="muted">${t("Loading …")}</p>`;
-  ({ overview: viewOverview, asns: viewAsns, vpn: viewVpn, exemptions: viewExemptions, runs: viewRuns, audit: viewAudit, settings: viewSettings })[v](el, arg)
+  ({ overview: viewOverview, asns: viewAsns, attackers: viewAttackers, vpn: viewVpn, exemptions: viewExemptions, runs: viewRuns, audit: viewAudit, settings: viewSettings })[v](el, arg)
     ?.catch?.((e) => (el.innerHTML = `<div class="note danger">${esc(e.message)}</div>`));
 }
 
@@ -444,6 +444,8 @@ async function viewOverview(el) {
         <div class="legend" aria-hidden="true"><span><i class="l-ban"></i>${t("Blocked")}</span><span><i class="l-cap"></i>${t("Captcha")}</span><span><i class="l-free"></i>${t("Not blocked")}</span><span><i class="l-res"></i>${t("Reserved")}</span></div>
       </div>
     </section>
+    ${o.attackers_recommended ? `<div class="note warn row hint"><span>${t("{n} networks keep attacking this server – CrowdSec caught several of their IPs this week.", { n: o.attackers_recommended })}</span>
+      <span class="spacer"></span><a class="btn sm" href="#/attackers">${t("Review attackers")}</a></div>` : ""}
     <div class="grid2">
       <div class="section"><div class="section-head"><h2>${t("Rules")}</h2></div><div class="box"><table><tbody>
         <tr><td><a href="#/asns">${t("ASNs")}</a></td><td class="num mono">${o.rules.asns}</td></tr>
@@ -480,6 +482,53 @@ async function loadAtlas(key) {
   atlas = mountAtlas(stage, atlasData, { ban: t("Block"), captcha: t("Captcha"), free: t("not blocked"), reserved: t("reserved") });
 }
 const statusTag = (s) => (!s ? `<span class="muted small">${t("not checked yet")}</span>` : s === "ban" || s === "captcha" ? `<span class="tag ${s}">${act(s)}</span>` : `<span class="tag ok">${t("clear")}</span>`);
+
+// --- Attackers: networks behind CrowdSec's own detections, with a recommendation per ASN -------------------------
+let attackerDays = 7;
+async function viewAttackers(el) {
+  const r = await api(`/attackers?days=${attackerDays}`);
+  const recTag = (x) => x.kind === "recommend" ? `<span class="tag ${x.action}">${t("Recommended:")} ${act(x.action)}</span>`
+    : x.kind === "active" ? `<span class="tag ${x.action}">${act(x.action)}</span>`
+    : x.kind === "protected" ? `<span class="tag">${t("protected")}</span>` : `<span class="tag">${t("watch")}</span>`;
+  const actions = (row) => row.recommendation.kind === "active" || row.recommendation.kind === "protected" ? ""
+    : `<button class="btn sm ${row.recommendation.kind === "recommend" && row.recommendation.action === "ban" ? "danger" : ""}" data-add="ban:${row.asn}">${t("Block")}</button>
+       <button class="btn sm" data-add="captcha:${row.asn}">${t("Captcha")}</button>`;
+  const since = r.history_since ? new Date(r.history_since + "T00:00:00Z").toLocaleDateString(locale(), { dateStyle: "medium" }) : null;
+  el.innerHTML = `<div class="section"><div class="section-head"><div>
+      <p class="small muted">${t("Networks whose IPs CrowdSec's own detections caught on this server – community blocklists and manual decisions are not counted. A recommendation appears once a hosting network shows {n} or more attacking IPs; consumer networks are never recommended.", { n: 5 })}</p></div>
+      <div class="row"><div class="seg" role="group" aria-label="${t("Period")}">${[7, 30, 90].map((d) => `<button type="button" data-days="${d}" aria-pressed="${d === attackerDays}">${t("{d} days", { d })}</button>`).join("")}</div>
+      <button class="btn" id="att-refresh">${t("Update")}</button></div></div>
+    ${r.error ? `<div class="note danger">${t("Could not read CrowdSec's alerts:")} ${esc(r.error)}</div>` : ""}
+    <p class="small muted">${r.updated ? t("Updated {when}", { when: ago(r.updated) }) : t("Not collected yet")}${since ? " · " + t("history since {d} (CrowdSec itself keeps alerts about a week; asn-blocker keeps a summary for 180 days)", { d: since }) : ""}</p>
+    <div class="box table-wrap">${r.rows.length ? `<table><thead><tr><th>ASN</th><th>${t("Name")}</th><th class="num">${t("Attacking IPs")}</th><th class="num hide-sm">${t("Alerts")}</th>
+      <th class="hide-sm">${t("Mostly")}</th><th class="hide-sm">${t("Last seen")}</th><th>${t("Recommendation")}</th><th><span class="sr-only">${t("Actions")}</span></th></tr></thead><tbody>
+      ${r.rows.map((x) => `<tr><td class="mono">AS${x.asn}</td><td>${esc(x.name) || "–"} ${x.cc ? `<span class="muted small">${esc(x.cc)}</span>` : ""} <span class="hide-sm">${classTag(x.class)}</span></td>
+        <td class="num"><button class="btn ghost sm mono" data-ips="${x.asn}" aria-label="${t("Show the {n} IPs of AS{asn}", { n: x.ips, asn: x.asn })}">${fmtNum(x.ips)}</button></td>
+        <td class="num mono hide-sm">${fmtNum(x.alerts)}</td>
+        <td class="small mono hide-sm">${x.scenarios.map((sc) => esc(sc.name.split("/").pop())).join(", ")}</td>
+        <td class="small hide-sm" title="${fmtTime(x.last_seen)}">${ago(x.last_seen)}</td>
+        <td>${recTag(x.recommendation)}<div class="small muted">${esc(t(x.recommendation.reason))}</div></td>
+        <td class="actions">${actions(x)}</td></tr>`).join("")}</tbody></table>`
+      : `<div class="empty">${r.updated ? t("No local detections in this period.") : t("The first collection runs shortly after CrowdSec is connected – or click “Update”.")}</div>`}</div></div>`;
+  $$("[data-days]", el).forEach((b) => (b.onclick = () => { attackerDays = +b.dataset.days; route(); }));
+  $("#att-refresh").onclick = guard(async () => {
+    const res = await api("/attackers/refresh", { method: "POST" });
+    toast(t("{n} new alerts", { n: res.new_alerts })); route();
+  });
+  $$("[data-add]", el).forEach((b) => (b.onclick = guard(async () => {
+    const [action, asn] = b.dataset.add.split(":"), row = r.rows.find((x) => x.asn === +asn);
+    if (await addAsnRule({ asn: row.asn, name: row.name, class: row.class }, action)) {
+      toast(t("AS{asn} added – takes effect with the next run", { asn: row.asn })); refreshOverview(); route();
+    }
+  })));
+  $$("[data-ips]", el).forEach((b) => (b.onclick = guard(async () => {
+    const asn = +b.dataset.ips, row = r.rows.find((x) => x.asn === asn), ips = await api(`/attackers/${asn}?days=${attackerDays}`);
+    await dialog({ title: t("AS{asn} – attacking IPs", { asn }),
+      body: `<p class="small">${esc(row.name)} · ${t("last {d} days", { d: attackerDays })}</p><div class="table-wrap"><table><thead><tr><th>IP</th><th class="num">${t("Alerts")}</th><th>${t("Scenarios")}</th><th>${t("Last seen")}</th></tr></thead><tbody>
+        ${ips.map((i) => `<tr><td class="mono">${esc(i.ip)}</td><td class="num mono">${fmtNum(i.alerts)}</td><td class="small mono">${i.scenarios.map((sc) => esc(sc.split("/").pop())).join(", ")}</td><td class="small">${ago(i.last_seen)}</td></tr>`).join("")}</tbody></table></div>`,
+      actions: [["cancel", t("Close"), "primary"]] });
+  })));
+}
 
 // --- ASNs ------------------------------------------------------------------------------------------------------
 // One rule from a search hit or an IP check; consumer ISPs ("eyeball" networks) need a confirmation.
