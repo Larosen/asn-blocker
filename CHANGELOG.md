@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3 (2026-10-24)
+- **Attackers**: networks behind CrowdSec's own detections on this server (7/30/90 days) – attacking IPs, alerts,
+  scenarios and last sighting per ASN, with a recommendation (*Block*, or *Captcha* for large clouds and transit
+  networks; never for consumer networks) and one-click rules. The IPs of an ASN are listed on click.
+- Alerts are read incrementally about every hour (at most 5,000 per read) and summarised per IP and day for 180 days,
+  so the history outlasts CrowdSec's own alert retention; community blocklists, manual and own decisions are excluded
+- The overview points out networks that keep attacking
+
 ## 0.7.2 (2026-10-24) – new interface
 - **New design system**: calm, near-monochrome surfaces with hairlines instead of shadows; colours in OKLCH derived
   from three inputs (neutral base, one accent, contrast), so Light, Dark and OLED stay consistent; Geist Sans/Mono

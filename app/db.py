@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts R
 CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, value TEXT NOT NULL, fetched_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS asn_names (asn INTEGER PRIMARY KEY, name TEXT NOT NULL, class TEXT, cc TEXT);
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user TEXT NOT NULL, expires REAL NOT NULL);
+-- Attackers seen by CrowdSec's own detections, one row per IP and day (CrowdSec itself keeps alerts ~7 days)
+CREATE TABLE IF NOT EXISTS attack_ips (day TEXT NOT NULL, ip TEXT NOT NULL, asn INTEGER, as_name TEXT NOT NULL DEFAULT '',
+  alerts INTEGER NOT NULL, scenarios TEXT NOT NULL DEFAULT '[]', last_seen REAL NOT NULL, PRIMARY KEY (day, ip));
+CREATE INDEX IF NOT EXISTS attack_ips_asn ON attack_ips(asn, day);
 """
 
 _local = threading.local()
@@ -90,10 +94,12 @@ def init():
 
 
 def prune():
-    """Bounded growth: drop stale cache entries (IP lookups etc.) and keep the newest 20,000 audit entries."""
+    """Bounded growth: drop stale cache entries (IP lookups etc.), keep the newest 20,000 audit entries and 180 days
+    of attacker history."""
     with tx() as c:
         c.execute("DELETE FROM cache WHERE fetched_at < ?", (time.time() - 7 * 86400,))
         c.execute("DELETE FROM audit_log WHERE id <= (SELECT max(id) FROM audit_log) - 20000")
+        c.execute("DELETE FROM attack_ips WHERE day < date('now', '-180 days')")
 
 
 # --- Settings --------------------------------------------------------------------
@@ -121,6 +127,9 @@ DEFAULTS = {
     "spamhaus_asndrop": None,        # None = off, otherwise 'ban' | 'captcha'
     "config_rev": 0,
     "applied_rev": 0,
+    "attackers_last_id": 0,          # newest CrowdSec alert already counted
+    "attackers_updated": None,       # time of the last successful collection
+    "attackers_error": None,         # why the last collection failed, if it did
 }
 
 

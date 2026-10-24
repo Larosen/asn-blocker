@@ -269,6 +269,18 @@ through the reverse proxy – an SSO-protected proxy route would reject the requ
 
 For **Gotify**, use `https://gotify.example.com/message` and the application token as access token.
 
+### Attackers: which networks to block
+
+**Attackers** shows the networks behind the IPs that your own CrowdSec caught on this server – brute force, scans,
+exploit attempts – over the last 7, 30 or 90 days: attacking IPs and alerts per ASN, the most frequent scenarios and
+when they were last seen. Community blocklists, manual decisions and asn-blocker's own decisions are not counted.
+
+A hosting network with 5 or more attacking IPs gets a recommendation – *Block*, or *Captcha* for very large clouds and
+transit networks – and can be added with one click (the usual confirmations for consumer and your own networks apply).
+Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
+alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
+CrowdSec's GeoIP enrichment, or from RIPEstat if the alert has none.
+
 ### Spamhaus ASN-DROP
 
 Optionally, the [Spamhaus ASN-DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) list – networks run

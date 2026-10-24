@@ -14,14 +14,14 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import auth, crowdsec, db, engine, logs, notify, selfprotect, sources, suggestions
+from . import attackers, auth, crowdsec, db, engine, logs, notify, selfprotect, sources, suggestions
 
 logs.setup()
 log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.7.2"
+VERSION = "0.7.3"
 
 
 @asynccontextmanager
@@ -269,6 +269,7 @@ def overview(request: Request, user: str = Depends(require_user)):
                                      "WHERE kind='apply' ORDER BY id DESC LIMIT 1")),
         "crowdsec_mode": db.get("crowdsec_mode"), "interval_hours": db.get("interval_hours"),
         "asn_names": db.q1("SELECT count(*) n FROM asn_names")["n"],
+        "attackers_recommended": attackers.report(7)["recommended"],
         "untrusted_proxy": auth.untrusted_proxy(request) if db.get("auth_mode") == "local" else None,
         "broad_proxies": auth.broad_trusted_proxies(),
     }
@@ -632,6 +633,31 @@ def delete_protect(kind: str, value: str, user: str = Depends(require_user)):
         db.bump_rev(c)
     db.audit(user, "protect.delete", {"kind": kind, "value": value})
     return {"ok": True}
+
+
+@api.get("/attackers")
+def get_attackers(days: int = Query(7)):
+    return attackers.report(days)
+
+
+_refreshed = [0.0]
+
+
+@api.post("/attackers/refresh")
+def refresh_attackers(user: str = Depends(require_user)):
+    if time.time() - _refreshed[0] < 30:
+        raise HTTPException(429, "Updated a moment ago – please wait a few seconds")
+    _refreshed[0] = time.time()
+    try:
+        n = attackers.collect()
+    except crowdsec.CrowdSecError as e:
+        raise HTTPException(502, str(e))
+    return {"ok": True, "new_alerts": n}
+
+
+@api.get("/attackers/{asn}")
+def get_attacker_ips(asn: int, days: int = Query(7)):
+    return attackers.ips_of(asn, days)
 
 
 @api.get("/check/{ip}")

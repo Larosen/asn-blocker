@@ -186,7 +186,7 @@ label.field > small { color: var(--text-3); }
 .btn.sm { min-height: 26px; padding: 2px 9px; font-size: 12.5px; border-radius: var(--r-sm); }
 .btn:disabled { opacity: .45; cursor: default; transform: none; }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-sm); overflow: hidden; background: var(--bg-0); }
-.seg button { border: 0; background: transparent; padding: 3px 11px; cursor: pointer; font-size: 12.5px; color: var(--text-2); transition: background-color var(--d-fast), color var(--d-fast); }
+.seg button { border: 0; background: transparent; padding: 3px 11px; cursor: pointer; font-size: 12.5px; white-space: nowrap; color: var(--text-2); transition: background-color var(--d-fast), color var(--d-fast); }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button:hover { color: var(--text-1); background: var(--bg-2); }
 .seg button[aria-pressed="true"].ban { background: var(--ban-bg); color: var(--ban); font-weight: 600; }
@@ -381,3 +381,4 @@ h3.inline-h { margin: 0; }
 .check.mid { align-self: center; margin-bottom: 12px; }
 .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .sugg { margin-top: 12px; } .sugg h3 { margin: 0; } .sugg p { margin: 6px 0; } .sugg .note { margin: 6px 0; }
+.note.hint { margin: -14px 0 28px; }

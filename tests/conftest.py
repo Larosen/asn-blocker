@@ -27,6 +27,11 @@ class FakeBackend:
 
     def __init__(self):
         self.decisions, self.next_id, self.calls = [], 1, []
+        self.alert_list = []  # what alerts() returns (CrowdSec's own detections etc.)
+
+    def alerts(self, since_hours=168, limit=5000):
+        self.calls.append(("alerts", since_hours))
+        return list(self.alert_list)
 
     def test(self):
         return "ok"
