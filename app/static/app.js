@@ -770,25 +770,33 @@ async function viewExemptions(el) {
   const [ex, watch, prot] = await Promise.all([api("/exemptions"), api("/watch"), api("/protect")]);
   const asns = ex.filter((e) => e.kind === "asn"), cidrs = ex.filter((e) => e.kind === "cidr");
   const table = (rows, cols, kind) => rows.length ? `<table><tbody>${rows.map((r) => `<tr>${cols(r)}<td class="actions"><button class="btn ghost sm danger" data-del-${kind}="${esc(r.value ?? r.ip)}" aria-label="${t("Remove {v}", { v: esc(r.value ?? r.ip) })}">${t("Remove")}</button></td></tr>`).join("")}</tbody></table>` : "";
-  const sessRows = prot.sessions.map((s) => `<tr><td class="mono">${esc(s.ip)}</td><td>${esc(s.user)}@${esc(s.line)}</td>
-      <td>${s.asns.map((a) => `<span class="mono">AS${a.asn}</span> ${esc(a.name)} ${a.protected ? `<span class="tag ok">${t("protected")}</span>` : ""}`).join("<br>") || "–"}</td>
+  const modeName = (m) => (m === "captcha" ? t("at most captcha") : t("never blocked"));
+  const protectedIps = new Set(prot.protected.filter((r) => r.kind === "ip").map((r) => r.value));
+  const sessRows = prot.sessions.map((s) => `<tr><td class="mono">${esc(s.ip)}</td><td class="hide-sm">${esc(s.user)}@${esc(s.line)}</td>
+      <td>${s.asns.map((a) => `<span class="mono">AS${a.asn}</span> ${esc(a.name)} ${a.protected ? `<span class="tag ${a.protected === "captcha" ? "captcha" : "ok"}">${modeName(a.protected)}</span>` : ""}`).join("<br>") || "–"}</td>
       <td>${statusTag(s.status || "clear")}</td>
-      <td class="actions">${s.asns.every((a) => a.protected) && s.asns.length ? "" : `<button class="btn sm" data-protect="${esc(s.ip)}">${t("Protect IP and ASN")}</button>`}</td></tr>`).join("");
+      <td class="actions">${protectedIps.has(s.ip) ? `<span class="tag ok">${t("IP protected")}</span>` : `<button class="btn sm" data-protect="${esc(s.ip)}">${t("Protect IP permanently")}</button>`}</td></tr>`).join("");
   const protRows = prot.protected.map((r) => `<tr><td>${r.kind === "asn" ? "ASN" : "IP"}</td><td class="mono">${r.kind === "asn" ? "AS" : ""}${esc(r.value)}</td>
-      <td>${esc(r.name || "")}</td><td class="muted">${esc(r.note)}</td>
+      <td>${esc(r.name || "")}${r.kind === "asn" ? `<div class="seg mt-xs" role="group" aria-label="${t("Protection of AS{asn}", { asn: esc(r.value) })}">
+        <button type="button" data-pmode="${esc(r.value)}:captcha" aria-pressed="${r.mode === "captcha"}" title="${t("May be put behind a captcha, never blocked")}">${t("at most captcha")}</button>
+        <button type="button" data-pmode="${esc(r.value)}:exempt" aria-pressed="${r.mode !== "captcha"}" title="${t("Cut out of every block and captcha")}">${t("never blocked")}</button></div>` : ""}</td>
+      <td class="muted small hide-sm">${esc(r.note)}</td>
       <td class="actions"><button class="btn ghost sm danger" data-unprotect="${r.kind}/${esc(r.value)}" aria-label="${t("Remove {v}", { v: esc(r.value) })}">${t("Remove")}</button></td></tr>`).join("");
   el.innerHTML = `
     <div class="section"><div class="section-head"><div><h2>${t("Self-protection")}</h2>
-        <p class="small muted">${t("Protected IPs and ASNs are never blocked – not via Spamhaus and not after confirming a sanity check. Active SSH sessions on the host are protected automatically.")}</p></div>
-        ${prot.client_ip ? `<button class="btn" data-protect="${esc(prot.client_ip)}">${t("Protect my browser IP {ip}", { ip: esc(prot.client_ip) })}</button>` : ""}</div>
+        <p class="small muted">${t("Protected IPs are never blocked – not via Spamhaus and not after confirming a sanity check; active SSH sessions on the host are protected automatically. A protected ASN is either never blocked or at most put behind a captcha – firewall bouncers ignore captchas, so SSH stays reachable. CrowdSec keeps banning single attacking IPs from every network either way.")}</p></div>
+        ${prot.client_ip && !protectedIps.has(prot.client_ip) ? `<button class="btn" data-protect="${esc(prot.client_ip)}">${t("Protect my browser IP {ip}", { ip: esc(prot.client_ip) })}</button>` : ""}</div>
       <div class="box">
         <div class="pad-sm row"><h3 class="inline-h">${t("Active SSH sessions")}</h3>
           ${prot.utmp === "ok" ? `<span class="tag ok">${t("detected")}</span>` : `<span class="tag captcha">${t("not available")}</span>`}</div>
         ${prot.utmp !== "ok" ? `<div class="note warn small">${t("To protect SSH sessions automatically, mount the host's session registry read-only:")} <code>- /run/systemd/sessions:/host/sessions:ro</code> ${t("(older systems without systemd-logind:")} <code>- /var/run/utmp:/host/utmp:ro</code>). ${t("Or run this in your SSH session:")} <code>docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect</code></div>`
-          : sessRows ? `<table><tbody>${sessRows}</tbody></table>` : `<div class="empty">${t("No remote SSH session active.")}</div>`}
+          : sessRows ? `<div class="table-wrap"><table><tbody>${sessRows}</tbody></table></div>` : `<div class="empty">${t("No remote SSH session active.")}</div>`}
         <div class="pad-sm"><h3 class="inline-h">${t("Permanently protected")}</h3></div>
-        ${protRows ? `<table><tbody>${protRows}</tbody></table>` : `<div class="empty">${t("Nothing protected yet. Protect at least the ASN of your internet connection.")}</div>`}
-        <form class="row pad-sm" id="add-protect"><input type="text" name="v" class="mono" placeholder="${t("IP address")}" required aria-label="IP"><label class="check-inline"><input type="checkbox" name="asn" checked> ${t("protect whole ASN")}</label><button class="btn">${t("Protect")}</button></form>
+        ${protRows ? `<div class="table-wrap"><table><tbody>${protRows}</tbody></table></div>` : `<div class="empty">${t("Nothing protected yet. Home connections change their IP – protect the ASN of your provider with “at most captcha”.")}</div>`}
+        <form class="row pad-sm" id="add-protect"><input type="text" name="v" class="mono" placeholder="${t("IP address")}" required aria-label="IP">
+          <label class="check-inline"><input type="checkbox" name="asn"> ${t("also its ASN:")}</label>
+          <select name="mode" aria-label="${t("Protection of the ASN")}" disabled><option value="captcha">${t("at most captcha")}</option><option value="exempt">${t("never blocked")}</option></select>
+          <button class="btn">${t("Protect")}</button></form>
       </div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Exempt ASNs")}</h2><p class="small muted">${t("Prefixes of these ASNs are never blocked, e.g. VPN providers’ exit networks.")}</p></div></div>
       <div class="box">${table(asns, (r) => `<td class="mono">AS${esc(r.value)}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.note)}</td>`, "asn")}
@@ -800,13 +808,21 @@ async function viewExemptions(el) {
       <div class="box">${table(watch, (r) => `<td class="mono">${esc(r.ip)}</td><td class="muted">${esc(r.note)}</td><td>${statusTag(r.last_status)}</td>`, "watch")}
       <form class="row pad-sm" id="add-watch"><input type="text" name="v" class="mono" placeholder="${t("IP address")}" required aria-label="IP"><input type="text" name="n" placeholder="${t("Note, e.g. phone")}" aria-label="${t("Note")}"><button class="btn">${t("Add")}</button></form></div></div>`;
   const re = () => { refreshOverview(); viewExemptions(el); };
-  const doProtect = async (ip, withAsn = true) => {
-    const r = await api("/protect", { method: "POST", body: { ip, with_asn: withAsn } });
-    toast(r.asns.length ? t("{ip} and {asns} protected", { ip, asns: r.asns.map((a) => "AS" + a).join(", ") }) : t("{ip} protected", { ip }));
+  const doProtect = async (ip, withAsn = false, mode = "captcha") => {
+    const r = await api("/protect", { method: "POST", body: { ip, with_asn: withAsn, asn_mode: mode } });
+    toast(r.asns.length ? t("{ip} and {asns} protected ({mode})", { ip, asns: r.asns.map((a) => "AS" + a).join(", "), mode: modeName(mode) }) : t("{ip} protected", { ip }));
     re();
   };
   $$("[data-protect]").forEach((b) => (b.onclick = guard(() => doProtect(b.dataset.protect))));
-  $("#add-protect").onsubmit = guard(async (e) => { e.preventDefault(); await doProtect(e.target.v.value.trim(), e.target.asn.checked); });
+  const pf = $("#add-protect");
+  pf.asn.onchange = () => (pf.mode.disabled = !pf.asn.checked);
+  pf.onsubmit = guard(async (e) => { e.preventDefault(); await doProtect(pf.v.value.trim(), pf.asn.checked, pf.mode.value); });
+  $$("[data-pmode]").forEach((b) => (b.onclick = guard(async () => {
+    if (b.getAttribute("aria-pressed") === "true") return;
+    const [asn, mode] = b.dataset.pmode.split(":");
+    await api(`/protect/asn/${asn}`, { method: "PUT", body: { mode } });
+    toast(t("AS{asn}: {mode} – takes effect with the next run", { asn, mode: modeName(mode) })); re();
+  })));
   $$("[data-unprotect]").forEach((b) => (b.onclick = guard(async () => {
     if (!(await confirmDlg(t("Remove protection"), t("{v} can then be blocked again. Continue?", { v: esc(b.dataset.unprotect.split("/")[1]) }), t("Remove"), "danger"))) return;
     await api(`/protect/${b.dataset.unprotect}`, { method: "DELETE" }); re();
@@ -864,7 +880,7 @@ const auditName = (a) => ({ "asn.put": t("ASN rule saved"), "asn.delete": t("ASN
   "watch.delete": t("Watched IP removed"), "settings.put": t("Settings changed"), "notify.put": t("Notifications changed"), "crowdsec.put": t("CrowdSec connection changed"),
   "crowdsec.cleanup": t("Old decisions removed"), "run.apply": t("Run started"), login: t("Signed in"), "setup.auth": t("Initial setup"),
   "account.password": t("Password changed"), import: t("Configuration imported"),
-  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed"),
+  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed"), "protect.mode": t("Self-protection changed"),
   "proxy.trust": t("Proxy trusted"), "proxy.names_learned": t("Proxy container name learned") }[a] ?? a);
 async function viewAudit(el) {
   const rows = await api("/audit");

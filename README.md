@@ -233,11 +233,21 @@ A firewall bouncer applies bans to *all* traffic, including SSH. To keep you fro
   `/var/run/utmp:/host/utmp:ro` on systems without systemd-logind. Some current distributions no
   longer have a utmp file. The IPs of these sessions are never blocked. **Exemptions → Self-protection** shows whether
   sessions are detected.
-- **Protected IPs and ASNs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed
-  run. Rules for protected ASNs are rejected. Home connections usually change their IP, so protect the **ASN** of
-  your internet provider. From an SSH session, one command does this:
+- **Protected IPs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed run.
+  By default only the IP itself is protected. Home connections usually change their IP, so you can also protect
+  its **ASN**, in one of two modes:
+  - **At most captcha** (default): the network is never banned. Ban rules for it become captcha, and bans from
+    other sources inside it are downgraded to captcha. Firewall bouncers ignore captchas, so SSH stays reachable,
+    while web visitors from that network still have to solve a captcha.
+  - **Never blocked**: the whole network is exempt from everything. Rules for it are rejected. Use this only for
+    small networks you control – a big provider network also carries attackers.
+
+  The mode can be switched per ASN with one click. Independently of this, CrowdSec keeps banning single attacking
+  IPs from a protected network itself. From an SSH session, one command protects your connection:
   ```bash
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP and ASN of this SSH connection
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP of this SSH connection
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn    # … and its ASN, at most captcha
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn-exempt  # … and its ASN, never blocked
   docker exec asn-blocker python -m app.cli protect --list                  # show what is protected
   ```
 - The **Overview** warns if the IP you are browsing from is affected by a block, with a one-click exemption.
@@ -346,7 +356,7 @@ Changes are listed in the [changelog](CHANGELOG.md).
 ```bash
 docker exec asn-blocker python -m app.cli reset-auth        # forgot the password: prints a new setup token
 docker exec asn-blocker python -m app.cli trust-proxy NAME  # proxy changed: trust it by container name, IP or CIDR
-docker exec asn-blocker python -m app.cli protect [IP]      # protect an IP and its ASN (see Lockout protection)
+docker exec asn-blocker python -m app.cli protect [IP] [--asn]  # protect an IP (and its ASN, see Lockout protection)
 docker exec asn-blocker python -m app.cli check-sources     # test all external data sources
 ```
 

@@ -7,6 +7,11 @@
 - Alerts are read incrementally about every hour (at most 5,000 per read) and summarised per IP and day for 180 days,
   so the history outlasts CrowdSec's own alert retention; community blocklists, manual and own decisions are excluded
 - The overview points out networks that keep attacking
+- **Self-protection protects single IPs by default.** A protected ASN now has a mode: *at most captcha* (new
+  default – never banned, ban rules and bans from other sources inside it become captcha, so SSH stays reachable
+  while brute force from that network still meets a captcha) or *never blocked* (the previous behaviour).
+  Existing protected ASNs keep *never blocked*; switch them with one click under Exemptions → Self-protection.
+  CLI: `protect` (IP only), `protect --asn` (at most captcha), `protect --asn-exempt`. API: `PUT /api/protect/asn/{asn}`
 
 ## 0.7.2 (2026-10-24) – new interface
 - **New design system**: calm, near-monochrome surfaces with hairlines instead of shadows; colours in OKLCH derived

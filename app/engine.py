@@ -90,12 +90,18 @@ def build(log, fresh=True):
     exempt += [(n, "Non-public range") for n in NON_PUBLIC]
     guard = guard_ips()
     exempt += [(ipaddress.ip_network(ip), label) for ip, label in guard.items()]
-    prot_asns = sorted(selfprotect.protected_asns())
-    for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
+    prot_asns = sorted(selfprotect.protected_asns("exempt"))
+    capped_asns = sorted(selfprotect.protected_asns("captcha"))
+    capped = []  # networks that may get a captcha but are never banned
+    for asn, p in sources.prefixes_many(prot_asns + capped_asns, use_cache=not fresh).items():
         if not p:  # fail closed like exempt ASNs: better no run than a run without the protection
             raise sources.SourceError(f"Self-protection AS{asn}: no prefixes")
-        exempt += [(n, f"Self-protection AS{asn}") for n in _plausible(netset.parse(p), f"protected AS{asn}", log)]
-    log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs")
+        nets = _plausible(netset.parse(p), f"protected AS{asn}", log)
+        if asn in capped_asns:
+            capped += nets
+        else:
+            exempt += [(n, f"Self-protection AS{asn}") for n in nets]
+    log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs never blocked, {len(capped_asns)} ASNs at most captcha")
 
     log("Collecting ASN ranges")
     asn_rules = rules()
@@ -110,6 +116,10 @@ def build(log, fresh=True):
     for asn in set(asn_rules) & set(prot_asns):
         log(f"  AS{asn} is protected (self-protection) – rule ignored")
         del asn_rules[asn]
+    for asn in set(asn_rules) & set(capped_asns):
+        if asn_rules[asn]["action"] == "ban":
+            log(f"  AS{asn} is protected against bans – captcha instead")
+            asn_rules[asn] = {**asn_rules[asn], "action": "captcha"}
     raw = {"ban": [], "captcha": []}
     prefixes = sources.prefixes_many(asn_rules, use_cache=not fresh)
     spamhaus = [0, 0]  # ASNs, prefixes – summarized instead of hundreds of individual lines
@@ -127,8 +137,12 @@ def build(log, fresh=True):
 
     log("Carving out exemptions")
     ex_nets = [n for n, _ in exempt]
-    ban = netset.subtract(raw["ban"], ex_nets)
-    captcha = netset.subtract(raw["captcha"], ex_nets + ban)  # captcha only where not already banned
+    ban = netset.subtract(raw["ban"], ex_nets + capped)
+    # bans that fall into networks protected against bans (e.g. through Spamhaus or another ASN's prefix) become captcha
+    downgraded = netset.subtract(raw["ban"], ex_nets + ban) if capped else []
+    captcha = netset.subtract(raw["captcha"] + downgraded, ex_nets + ban)  # captcha only where not already banned
+    if downgraded:
+        log(f"  {len(downgraded)} ranges in networks protected against bans: captcha instead of ban")
     log(f"  ban: {len(ban)} ranges, captcha: {len(captcha)} ranges, {len(netset.collapse(ex_nets))} exempt networks")
     # hard final check: no protected IP may end up in a block
     for ip, label in guard.items():

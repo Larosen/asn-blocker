@@ -3,8 +3,9 @@
   docker exec asn-blocker python -m app.cli check-sources   check all external data sources live
   docker exec asn-blocker python -m app.cli trust-proxy NAME  trust a reverse proxy by container name, IP or CIDR
   docker exec asn-blocker python -m app.cli untrust-proxy NAME  remove a trusted proxy entry
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect [IP] [--ip-only]
-      permanently protect the IP and ASN of the current SSH connection (or the given IP) from blocks
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect [IP] [--asn | --asn-exempt]
+      permanently protect the IP of the current SSH connection (or the given IP) from blocks;
+      --asn also protects its network against bans (captcha stays possible), --asn-exempt never blocks it
   docker exec asn-blocker python -m app.cli protect --list  show protected IPs/ASNs and SSH sessions
 """
 import ipaddress
@@ -99,7 +100,8 @@ def protect(args) -> bool:
             print(f"  {s['ip']:<40} {sources.clean(s['user'], 40)}@{sources.clean(s['line'], 40)}")
         print("Protected:")
         for r in selfprotect.protected():
-            print(f"  {r['kind']:<4} {r['value']:<40} {sources.clean(r['note'], 80)}")
+            mode = {"exempt": "never blocked", "captcha": "at most captcha"}[r["mode"]] if r["kind"] == "asn" else ""
+            print(f"  {r['kind']:<4} {r['value']:<40} {mode:<16} {sources.clean(r['note'], 80)}")
         return True
     ips = [a for a in args if not a.startswith("--")]
     ip = ips[0] if ips else (os.environ.get("SSH_CLIENT") or os.environ.get("SSH_CONNECTION") or "").split(" ")[0]
@@ -112,7 +114,8 @@ def protect(args) -> bool:
             print(f"{ip} is not a public address (e.g. a VPN, Tailscale or bastion address). Protect the public IP you "
                   "connect from instead: docker exec asn-blocker python -m app.cli protect <public-ip>")
             return False
-        asns = selfprotect.protect_ip(ip, "SSH (CLI)", with_asn="--ip-only" not in args)
+        mode = "exempt" if "--asn-exempt" in args else "captcha"
+        asns = selfprotect.protect_ip(ip, "SSH (CLI)", with_asn="--asn" in args or "--asn-exempt" in args, asn_mode=mode)
     except ValueError:
         print(f"Not a valid IP: {sources.clean(ip, 60)}")
         return False
@@ -120,10 +123,14 @@ def protect(args) -> bool:
         print(f"IP {ip} protected, could not determine ASN: {sources.clean(e)}")
         return False
     with db.tx() as c:
-        removed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
-    print(f"Protected: {ip}" + "".join(f", AS{a} {sources.clean(sources.asn_name(a), 60)}" for a in asns))
-    if removed:
-        print("Removed block rules: " + ", ".join(f"AS{a}" for a in removed))
+        if mode == "exempt":
+            changed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
+        else:
+            changed = [a for a in asns if c.execute("UPDATE asn_rules SET action='captcha' WHERE asn=? AND action='ban'", (a,)).rowcount]
+    print(f"Protected: {ip}" + "".join(f", AS{a} {sources.clean(sources.asn_name(a), 60)} "
+                                       f"({'never blocked' if mode == 'exempt' else 'at most captcha'})" for a in asns))
+    if changed:
+        print(("Removed block rules: " if mode == "exempt" else "Block rules changed to captcha: ") + ", ".join(f"AS{a}" for a in changed))
     print("Takes effect on the next run – click 'Apply' in the web UI.")
     return True
 

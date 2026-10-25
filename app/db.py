@@ -20,8 +20,10 @@ CREATE TABLE IF NOT EXISTS exemptions (
   kind TEXT NOT NULL CHECK (kind IN ('asn','cidr')), value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (kind, value));
 -- Self-protection: IPs/ASNs that must never be blocked
+-- mode (ASNs only): 'exempt' = never blocked, 'captcha' = may be behind a captcha but never banned
 CREATE TABLE IF NOT EXISTS protected (kind TEXT NOT NULL CHECK (kind IN ('asn','ip')), value TEXT NOT NULL,
-  note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, PRIMARY KEY (kind, value));
+  note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'exempt'
+  CHECK (mode IN ('exempt','captcha')), PRIMARY KEY (kind, value));
 CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', last_status TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL, triggered_by TEXT NOT NULL,
@@ -86,6 +88,8 @@ def init():
     os.umask(0o077)  # also covers the -wal/-shm files, which contain the same secrets
     with _write_lock:
         conn().executescript(SCHEMA)
+        if "mode" not in {r[1] for r in conn().execute("PRAGMA table_info(protected)")}:  # before 0.7.3
+            conn().execute("ALTER TABLE protected ADD COLUMN mode TEXT NOT NULL DEFAULT 'exempt'")
     try:
         os.chmod(DB_FILE, 0o600)
     except OSError:

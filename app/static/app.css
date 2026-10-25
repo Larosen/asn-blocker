@@ -336,7 +336,7 @@ dialog .df { padding: 12px 16px; border-top: 1px solid var(--line); display: fle
   .grid2, .split, .atlas { grid-template-columns: 1fr; }
   .atlas { padding: 14px; gap: 18px; }
   .ipcheck { width: 150px; }
-  .cmdk-btn .lbl { display: none; }
+  .cmdk-btn { display: none; }  /* touch devices: no keyboard shortcut to show */
   .suggest .item { grid-template-columns: 1fr auto; }
   .hide-sm { display: none; }
 }
@@ -382,3 +382,4 @@ h3.inline-h { margin: 0; }
 .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .sugg { margin-top: 12px; } .sugg h3 { margin: 0; } .sugg p { margin: 6px 0; } .sugg .note { margin: 6px 0; }
 .note.hint { margin: -14px 0 28px; }
+.seg.mt-xs { display: flex; width: max-content; margin-top: 6px; }

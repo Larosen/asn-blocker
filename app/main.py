@@ -372,14 +372,23 @@ def asn_suggestions():
         for lst in suggestions.LISTS]}
 
 
+def _guard_protected(rules):
+    """Protected ASNs: no rules at all ('never block'), or captcha only ('at most captcha')."""
+    blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns("exempt"))
+    if blocked:
+        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
+                            + " is protected and cannot be blocked")
+    capped = sorted({r.asn for r in rules if r.action == "ban"} & selfprotect.protected_asns("captcha"))
+    if capped:
+        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in capped)
+                            + " is protected against bans – use Captcha")
+
+
 @api.put("/asns")
 def put_asns(rules: list[AsnRule], request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
     if len(rules) > 5000:
         raise HTTPException(422, "At most 5000 rules per request")
-    blocked = sorted({r.asn for r in rules} & selfprotect.protected_asns())
-    if blocked:
-        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
-                            + " is protected and cannot be blocked")
+    _guard_protected(rules)
     _guard_own_asn([r.asn for r in rules], request, confirm_own)
     now = time.time()
     with db.tx() as c:
@@ -586,14 +595,14 @@ def get_protect(request: Request):
     applied = {}
     for r in db.q("SELECT type, value FROM applied"):
         applied.setdefault(r["type"], []).append(r["value"])
-    prot_asns = selfprotect.protected_asns()
+    modes = {int(r["value"]): r["mode"] for r in selfprotect.protected() if r["kind"] == "asn"}
     for s in sessions:
         s["status"] = engine.status_of(s["ip"], applied)
         try:
             asns = sources.ip_info(s["ip"])["asns"]
         except sources.SourceError:
             asns = []
-        s["asns"] = [{"asn": a, "name": sources.asn_name(a), "protected": a in prot_asns} for a in asns]
+        s["asns"] = [{"asn": a, "name": sources.asn_name(a), "protected": modes.get(a)} for a in asns]
     rows = selfprotect.protected()
     for r in rows:
         if r["kind"] == "asn":
@@ -608,22 +617,45 @@ def get_protect(request: Request):
 
 class Protect(BaseModel):
     ip: str
-    with_asn: bool = True
+    with_asn: bool = False
+    asn_mode: Literal["exempt", "captcha"] = "captcha"
     note: str = Field("", max_length=200)
 
 
 @api.post("/protect")
 def add_protect(body: Protect, user: str = Depends(require_user)):
     try:
-        asns = selfprotect.protect_ip(body.ip.strip(), body.note or f"by {user}", body.with_asn)
+        asns = selfprotect.protect_ip(body.ip.strip(), body.note or f"by {user}", body.with_asn, body.asn_mode)
     except ValueError:
         raise HTTPException(422, "Not a valid IP address")
     except sources.SourceError as e:
         raise HTTPException(502, str(e))
-    with db.tx() as c:
-        c.executemany("DELETE FROM asn_rules WHERE asn=?", [(a,) for a in asns])
-    db.audit(user, "protect.add", {"ip": body.ip, "asns": asns})
+    _apply_protection_to_rules(asns, body.asn_mode)
+    db.audit(user, "protect.add", {"ip": body.ip, "asns": asns, "asn_mode": body.asn_mode if asns else None})
     return {"ok": True, "asns": asns}
+
+
+def _apply_protection_to_rules(asns, mode):
+    """'never block' removes existing rules, 'at most captcha' turns block rules into captcha rules."""
+    with db.tx() as c:
+        if mode == "exempt":
+            c.executemany("DELETE FROM asn_rules WHERE asn=?", [(a,) for a in asns])
+        else:
+            c.executemany("UPDATE asn_rules SET action='captcha' WHERE asn=? AND action='ban'", [(a,) for a in asns])
+        db.bump_rev(c)
+
+
+class ProtectMode(BaseModel):
+    mode: Literal["exempt", "captcha"]
+
+
+@api.put("/protect/asn/{asn}")
+def set_protect_mode(asn: int, body: ProtectMode, user: str = Depends(require_user)):
+    if not selfprotect.set_mode(asn, body.mode):
+        raise HTTPException(404, f"AS{asn} is not protected")
+    _apply_protection_to_rules([asn], body.mode)
+    db.audit(user, "protect.mode", {"asn": asn, "mode": body.mode})
+    return {"ok": True}
 
 
 @api.delete("/protect/{kind}/{value:path}")
@@ -913,10 +945,7 @@ class ImportData(BaseModel):
 @api.post("/import")
 def import_cfg(data: ImportData, request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
     """Everything is validated first and written in one transaction – an invalid entry changes nothing."""
-    blocked = sorted({r.asn for r in data.asns} & selfprotect.protected_asns())
-    if blocked:
-        raise HTTPException(422, "Self-protection: " + ", ".join(f"AS{a}" for a in blocked)
-                            + " is protected and cannot be blocked")
+    _guard_protected(data.asns)
     _guard_own_asn([r.asn for r in data.asns], request, confirm_own)
     exemptions = [(e.kind, _exemption_value(e), e.note) for e in data.exemptions]
     watch = [(_watch_value(w), w.note) for w in data.watch]

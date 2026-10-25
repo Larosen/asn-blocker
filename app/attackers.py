@@ -158,6 +158,8 @@ def _recommend(row, days):
         return {"kind": "watch", "reason": "Consumer network – blocking it would hit real visitors; " + why}
     if ips < MIN_IPS:
         return {"kind": "watch", "reason": why}
+    if row.get("capped"):
+        return {"kind": "recommend", "action": "captcha", "reason": why + "; protected against bans – at most captcha"}
     if size and size >= LARGE:
         return {"kind": "recommend", "action": "captcha", "reason": why + "; large network with legitimate services"}
     if "carrier" in cls or "transit" in cls:
@@ -177,14 +179,15 @@ def report(days=7, limit=100):
     rules = {r["asn"]: r["action"] for r in db.q("SELECT asn, action FROM asn_rules")}
     names = {r["asn"]: r for r in db.q("SELECT asn, name, class, cc FROM asn_names WHERE asn IN (SELECT DISTINCT asn FROM "
                                        "attack_ips WHERE day >= date('now', ?))", (since,))}
-    shielded = selfprotect.protected_asns() | {int(r["value"]) for r in db.q("SELECT value FROM exemptions WHERE kind='asn'")}
+    shielded = selfprotect.protected_asns("exempt") | {int(r["value"]) for r in db.q("SELECT value FROM exemptions WHERE kind='asn'")}
+    capped = selfprotect.protected_asns("captcha")
     out = []
     for r in rows:
         n = names.get(r["asn"])
         row = {"asn": r["asn"], "name": (n["name"] if n else "") or r["as_name"], "class": n["class"] if n else "",
                "cc": n["cc"] if n else "", "ips": r["ips"], "alerts": r["alerts"], "last_seen": r["last_seen"],
                "first_day": r["first_day"], "size": _size(r["asn"]), "rule": rules.get(r["asn"]),
-               "protected": r["asn"] in shielded,
+               "protected": r["asn"] in shielded, "capped": r["asn"] in capped,
                "scenarios": [{"name": k, "n": v} for k, v in scen[r["asn"]].most_common(3)]}
         row["recommendation"] = _recommend(row, days)
         out.append(row)
