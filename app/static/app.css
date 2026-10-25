@@ -204,6 +204,8 @@ tbody tr:hover td { background: var(--bg-2); }
 td.actions { text-align: right; white-space: nowrap; width: 1%; }
 td input.inline { border-color: transparent; background: transparent; width: 100%; min-width: 120px; }
 td input.inline:hover, td input.inline:focus { border-color: var(--line-strong); background: var(--bg-0); }
+td select.inline { border-color: transparent; background-color: transparent; min-width: 110px; }
+td select.inline:hover, td select.inline:focus { border-color: var(--line-strong); background-color: var(--bg-0); }
 .empty { padding: 32px 16px; text-align: center; color: var(--text-3); }
 .table-wrap { overflow-x: auto; position: relative; }
 

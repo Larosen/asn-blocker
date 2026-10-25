@@ -14,7 +14,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS asn_rules (
   asn INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', action TEXT NOT NULL CHECK (action IN ('ban','captcha')),
-  note TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', updated_at REAL NOT NULL);
+  note TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', updated_at REAL NOT NULL,
+  expires_at REAL);  -- NULL = permanent; expired rules are removed by the scheduler
 CREATE TABLE IF NOT EXISTS vpn_rules (provider TEXT NOT NULL, country TEXT NOT NULL, PRIMARY KEY (provider, country));
 CREATE TABLE IF NOT EXISTS exemptions (
   kind TEXT NOT NULL CHECK (kind IN ('asn','cidr')), value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
@@ -90,6 +91,8 @@ def init():
         conn().executescript(SCHEMA)
         if "mode" not in {r[1] for r in conn().execute("PRAGMA table_info(protected)")}:  # before 0.7.3
             conn().execute("ALTER TABLE protected ADD COLUMN mode TEXT NOT NULL DEFAULT 'exempt'")
+        if "expires_at" not in {r[1] for r in conn().execute("PRAGMA table_info(asn_rules)")}:  # before 0.7.3
+            conn().execute("ALTER TABLE asn_rules ADD COLUMN expires_at REAL")
     try:
         os.chmod(DB_FILE, 0o600)
     except OSError:
@@ -134,6 +137,7 @@ DEFAULTS = {
     "attackers_last_id": 0,          # newest CrowdSec alert already counted
     "attackers_updated": None,       # time of the last successful collection
     "attackers_error": None,         # why the last collection failed, if it did
+    "attackers_notified": {},        # ASN -> time of the last "keeps attacking" notification
 }
 
 

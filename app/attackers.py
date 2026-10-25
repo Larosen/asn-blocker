@@ -13,7 +13,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from . import crowdsec, db, selfprotect, sources
+from . import crowdsec, db, notify, selfprotect, sources
 
 log = logging.getLogger("asn_blocker.attackers")
 
@@ -23,6 +23,7 @@ LOOKUP_BUDGET = 20         # … and at most this many seconds for them (the res
 MIN_IPS = 5                # attacking IPs before a whole network is recommended
 LARGE = 2 ** 22            # IPv4 addresses (~4 M) from which a network is "large": captcha, not block
 WINDOWS = (7, 30, 90)
+NOTIFY_AGAIN = 30 * 86400  # a network that keeps being recommended is reported again after this long
 _lock = threading.Lock()
 
 
@@ -104,6 +105,7 @@ def collect(backend=None) -> int:
             db.put("attackers_error", None, c)
         _backfill(deadline)
         _fetch_sizes()
+        _notify_new()
         if counted:
             log.info("Attackers: %d new alerts from %d IPs", counted, len({ip for _, ip in rows}))
         return counted
@@ -144,6 +146,24 @@ def _fetch_sizes(limit=30):
             continue
         v4 = sum(n.num_addresses for n in ipaddress.collapse_addresses(n for n in nets if n.version == 4))
         db.cache_put(f"asnsize:{r['asn']}", v4)
+
+
+def _notify_new():
+    """One notification when networks newly qualify for a recommendation (each again after 30 days at the earliest)."""
+    if not db.get("notify_url"):
+        return
+    now = time.time()
+    seen = {k: v for k, v in (db.get("attackers_notified") or {}).items() if now - v < NOTIFY_AGAIN}
+    new = [r for r in report(7)["rows"] if r["recommendation"]["kind"] == "recommend" and str(r["asn"]) not in seen]
+    if new:
+        act = {"ban": "block", "captcha": "captcha"}
+        lines = [f"AS{r['asn']} {r['name'] or '?'}: {r['ips']} attacking IPs – {act[r['recommendation']['action']]}"
+                 for r in new[:10]]
+        more = f"\n… and {len(new) - 10} more" if len(new) > 10 else ""
+        notify.send(f"asn-blocker: {len(new)} network{'s' if len(new) > 1 else ''} keep attacking",
+                    "\n".join(lines) + more + "\nReview them under Attackers.", "warning", page="attackers")
+        seen |= {str(r["asn"]): now for r in new}
+    db.put("attackers_notified", seen)
 
 
 def _recommend(row, days):

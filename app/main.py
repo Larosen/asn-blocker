@@ -336,6 +336,7 @@ class AsnRule(BaseModel):
     name: str = Field("", max_length=200)
     action: Literal["ban", "captcha"]
     note: str = Field("", max_length=500)
+    expires_at: float | None = Field(None, gt=0, lt=4102444800)  # None = permanent
 
 
 def _own_asns(request: Request) -> dict[int, str]:
@@ -384,6 +385,13 @@ def _guard_protected(rules):
                             + " is protected against bans – use Captcha")
 
 
+def _upsert_rule(c, r, name, now):
+    c.execute("INSERT INTO asn_rules(asn,name,action,note,updated_at,expires_at) VALUES(?,?,?,?,?,?) "
+              "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, note=excluded.note, "
+              "updated_at=excluded.updated_at, expires_at=excluded.expires_at",
+              (r.asn, name, r.action, r.note, now, r.expires_at))
+
+
 @api.put("/asns")
 def put_asns(rules: list[AsnRule], request: Request, confirm_own: bool = Query(False), user: str = Depends(require_user)):
     if len(rules) > 5000:
@@ -394,9 +402,7 @@ def put_asns(rules: list[AsnRule], request: Request, confirm_own: bool = Query(F
     with db.tx() as c:
         for r in rules:
             name = r.name or sources.asn_name(r.asn)
-            c.execute("INSERT INTO asn_rules(asn,name,action,note,updated_at) VALUES(?,?,?,?,?) "
-                      "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, "
-                      "note=excluded.note, updated_at=excluded.updated_at", (r.asn, name, r.action, r.note, now))
+            _upsert_rule(c, r, name, now)
         db.bump_rev(c)
     db.audit(user, "asn.put", [r.model_dump() for r in rules] + ([{"confirmed_own_network": True}] if confirm_own else []))
     return {"ok": True}
@@ -927,7 +933,7 @@ def audit_log(limit: int = Query(200, ge=1, le=1000)):
 
 @api.get("/export")
 def export():
-    return {"version": 1, "asns": db.q("SELECT asn,name,action,note FROM asn_rules ORDER BY asn"),
+    return {"version": 1, "asns": db.q("SELECT asn,name,action,note,expires_at FROM asn_rules ORDER BY asn"),
             "vpn": db.q("SELECT provider,country FROM vpn_rules"), "vpn_modes": db.get("vpn_modes"),
             "exemptions": db.q("SELECT kind,value,note FROM exemptions"),
             "watch": db.q("SELECT ip,note FROM watch_ips")}
@@ -954,10 +960,7 @@ def import_cfg(data: ImportData, request: Request, confirm_own: bool = Query(Fal
     now = time.time()
     with db.tx() as c:
         for r in data.asns:
-            c.execute("INSERT INTO asn_rules(asn,name,action,note,updated_at) VALUES(?,?,?,?,?) "
-                      "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, "
-                      "note=excluded.note, updated_at=excluded.updated_at",
-                      (r.asn, r.name or sources.asn_name(r.asn), r.action, r.note, now))
+            _upsert_rule(c, r, r.name or sources.asn_name(r.asn), now)
         c.executemany("INSERT OR REPLACE INTO exemptions VALUES(?,?,?)", exemptions)
         c.executemany("INSERT OR REPLACE INTO watch_ips(ip,note) VALUES(?,?)", watch)
         c.executemany("INSERT OR IGNORE INTO vpn_rules VALUES(?,?)", vpn)

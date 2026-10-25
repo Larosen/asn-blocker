@@ -48,8 +48,21 @@ CONFIRM_TOLERANCE = 5  # % a confirmed run's result may differ from the stopped 
 # --- Desired state -------------------------------------------------------------------------
 
 def rules():
-    asn_rules = {r["asn"]: r for r in db.q("SELECT * FROM asn_rules")}
-    return asn_rules
+    """Active ASN rules – an expired rule no longer counts, even before the scheduler has removed it."""
+    return {r["asn"]: r for r in db.q("SELECT * FROM asn_rules WHERE expires_at IS NULL OR expires_at > ?", (time.time(),))}
+
+
+def expire_rules():
+    """Removes rules whose time is up. Returns the removed ASNs."""
+    with db.tx() as c:
+        gone = [dict(r) for r in c.execute("SELECT asn, name, action FROM asn_rules WHERE expires_at <= ?", (time.time(),))]
+        if gone:
+            c.executemany("DELETE FROM asn_rules WHERE asn=?", [(r["asn"],) for r in gone])
+            db.bump_rev(c)
+    if gone:
+        db.audit("scheduler", "asn.expired", [{"asn": r["asn"], "action": r["action"]} for r in gone])
+        log_.info("Rules expired: %s", ", ".join(f"AS{r['asn']}" for r in gone))
+    return [r["asn"] for r in gone]
 
 
 def build(log, fresh=True):
@@ -485,10 +498,13 @@ def next_due():
 
 def scheduler():
     last_prune = last_attackers = 0.0
+    release = False  # expired rules are released right away instead of at the next regular run
     while True:
         try:
+            release = bool(expire_rules()) or release
             due = next_due()
-            if due and due <= time.time() and not is_running():
+            if due and (release or due <= time.time()) and not is_running():
+                release = False
                 run("apply", "scheduler")
             if time.time() - last_prune > 86400:
                 db.prune()

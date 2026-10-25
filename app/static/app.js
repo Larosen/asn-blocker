@@ -484,7 +484,7 @@ async function loadAtlas(key) {
 const statusTag = (s) => (!s ? `<span class="muted small">${t("not checked yet")}</span>` : s === "ban" || s === "captcha" ? `<span class="tag ${s}">${act(s)}</span>` : `<span class="tag ok">${t("clear")}</span>`);
 
 // --- Attackers: networks behind CrowdSec's own detections, with a recommendation per ASN -------------------------
-let attackerDays = 7;
+let attackerDays = 7, attackerLife = "";
 async function viewAttackers(el) {
   const r = await api(`/attackers?days=${attackerDays}`);
   const recTag = (x) => x.kind === "recommend" ? `<span class="tag ${x.action}">${t("Recommended:")} ${act(x.action)}</span>`
@@ -497,6 +497,7 @@ async function viewAttackers(el) {
   el.innerHTML = `<div class="section"><div class="section-head"><div>
       <p class="small muted">${t("Networks whose IPs CrowdSec's own detections caught on this server – community blocklists and manual decisions are not counted. A recommendation appears once a hosting network shows {n} or more attacking IPs; consumer networks are never recommended.", { n: 5 })}</p></div>
       <div class="row"><div class="seg" role="group" aria-label="${t("Period")}">${[7, 30, 90].map((d) => `<button type="button" data-days="${d}" aria-pressed="${d === attackerDays}">${t("{d} days", { d })}</button>`).join("")}</div>
+      <label class="row small">${t("New rules:")} <select id="att-life" aria-label="${t("Lifetime of new rules")}">${[["", t("Permanent")], ["30", t("30 days")], ["90", t("90 days")]].map(([v, l]) => `<option value="${v}" ${v === attackerLife ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       <button class="btn" id="att-refresh">${t("Update")}</button></div></div>
     ${r.error ? `<div class="note danger">${t("Could not read CrowdSec's alerts:")} ${esc(r.error)}</div>` : ""}
     <p class="small muted">${r.updated ? t("Updated {when}", { when: ago(r.updated) }) : t("Not collected yet")}${since ? " · " + t("history since {d} (CrowdSec itself keeps alerts about a week; asn-blocker keeps a summary for 180 days)", { d: since }) : ""}</p>
@@ -511,13 +512,15 @@ async function viewAttackers(el) {
         <td class="actions">${actions(x)}</td></tr>`).join("")}</tbody></table>`
       : `<div class="empty">${r.updated ? t("No local detections in this period.") : t("The first collection runs shortly after CrowdSec is connected – or click “Update”.")}</div>`}</div></div>`;
   $$("[data-days]", el).forEach((b) => (b.onclick = () => { attackerDays = +b.dataset.days; route(); }));
+  $("#att-life").onchange = (e) => { attackerLife = e.target.value; };
   $("#att-refresh").onclick = guard(async () => {
     const res = await api("/attackers/refresh", { method: "POST" });
     toast(t("{n} new alerts", { n: res.new_alerts })); route();
   });
   $$("[data-add]", el).forEach((b) => (b.onclick = guard(async () => {
     const [action, asn] = b.dataset.add.split(":"), row = r.rows.find((x) => x.asn === +asn);
-    if (await addAsnRule({ asn: row.asn, name: row.name, class: row.class }, action)) {
+    const expires_at = attackerLife ? Math.round(Date.now() / 1000) + +attackerLife * 86400 : null;
+    if (await addAsnRule({ asn: row.asn, name: row.name, class: row.class }, action, { note: t("attacking network"), expires_at })) {
       toast(t("AS{asn} added – takes effect with the next run", { asn: row.asn })); refreshOverview(); route();
     }
   })));
@@ -532,9 +535,16 @@ async function viewAttackers(el) {
 
 // --- ASNs ------------------------------------------------------------------------------------------------------
 // One rule from a search hit or an IP check; consumer ISPs ("eyeball" networks) need a confirmation.
-async function addAsnRule(a, action) {
+async function addAsnRule(a, action, extra = {}) {
   if (/eyeball/i.test(a.class || "") && !(await confirmDlg(t("Consumer network"), t("AS{asn} {name} is classified as an eyeball network (consumer ISP). Blocking it hits real visitors. Add anyway?", { asn: a.asn, name: esc(a.name) }), t("Add"), "danger"))) return false;
-  return putRules("/asns", [{ asn: a.asn, name: a.name || "", action, note: a.via ? t("from IP {ip}", { ip: a.via.ip }) : "" }]);
+  return putRules("/asns", [{ asn: a.asn, name: a.name || "", action, note: a.via ? t("from IP {ip}", { ip: a.via.ip }) : "", ...extra }]);
+}
+
+// Rule lifetime: permanent, or removed automatically after a number of days (and released on the next run)
+function expirySelect(r) {
+  const opts = [["", t("Permanent")], ["7", t("7 days")], ["30", t("30 days")], ["90", t("90 days")], ["365", t("1 year")]];
+  const keep = r.expires_at ? `<option value="keep" selected>${esc(ago(r.expires_at))}</option>` : "";
+  return `<select class="inline" data-exp aria-label="${t("Lifetime of AS{asn}", { asn: r.asn })}" title="${r.expires_at ? esc(fmtTime(r.expires_at)) : ""}">${keep}${opts.map(([v, l]) => `<option value="${v}" ${!r.expires_at && !v ? "selected" : ""}>${l}</option>`).join("")}</select>`;
 }
 
 // Saves rules; if they would block the network this browser is connected from, asks for an explicit confirmation.
@@ -579,12 +589,13 @@ async function viewAsns(el) {
   };
   const draw = () => {
     const list = visible();
-    $("#rules").innerHTML = rules.length ? `<table><thead><tr><th class="sel"><input type="checkbox" id="sel-all" aria-label="${t("Select all")}"></th><th>ASN</th><th>${t("Name")}</th><th class="hide-sm">${t("Type")}</th><th class="num hide-sm">${t("Prefixes")}</th><th class="num hide-sm">${t("IPv4 addresses")}</th><th>${t("Action")}</th><th>${t("Note")}</th><th><span class="sr-only">${t("Remove")}</span></th></tr></thead><tbody>
+    $("#rules").innerHTML = rules.length ? `<table><thead><tr><th class="sel"><input type="checkbox" id="sel-all" aria-label="${t("Select all")}"></th><th>ASN</th><th>${t("Name")}</th><th class="hide-sm">${t("Type")}</th><th class="num hide-sm">${t("Prefixes")}</th><th class="num hide-sm">${t("IPv4 addresses")}</th><th>${t("Action")}</th><th class="hide-sm">${t("Expires")}</th><th>${t("Note")}</th><th><span class="sr-only">${t("Remove")}</span></th></tr></thead><tbody>
       ${list.map((r) => `<tr data-asn="${r.asn}"><td class="sel"><input type="checkbox" data-sel ${selected.has(r.asn) ? "checked" : ""} aria-label="${t("Select AS{asn}", { asn: r.asn })}"></td><td class="mono">AS${r.asn}</td><td>${esc(r.name)}${r.cc ? ` <span class="muted small">${esc(r.cc)}</span>` : ""}</td>
         <td class="hide-sm">${classTag(r.class)}</td>
         <td class="num mono hide-sm">${r.stats ? fmtNum(r.stats.v4) + (r.stats.v6 ? ` <span class="muted">+${r.stats.v6}</span>` : "") : `<span class="muted">…</span>`}</td>
         <td class="num mono hide-sm">${r.stats ? fmtAddr(r.stats.addresses) : `<span class="muted">…</span>`}</td>
         <td>${segAction(r.action)}</td>
+        <td class="hide-sm">${expirySelect(r)}</td>
         <td><input class="inline" data-note value="${esc(r.note)}" placeholder="—" aria-label="${t("Note for AS{asn}", { asn: r.asn })}"></td>
         <td class="actions"><button class="btn ghost sm danger" data-del aria-label="${t("Remove AS{asn}", { asn: r.asn })}">${t("Remove")}</button></td></tr>`).join("")}
       </tbody></table>` : `<div class="empty">${t("No ASNs yet. Search above, paste an existing list, or start with the suggestions.")} <button class="btn sm" id="suggest-empty">${t("Show suggestions")}</button></div>`;
@@ -595,6 +606,12 @@ async function viewAsns(el) {
       $("[data-sel]", tr).onchange = (e) => { e.target.checked ? selected.add(r.asn) : selected.delete(r.asn); syncBulk(); };
       $$(".seg button", tr).forEach((b) => (b.onclick = guard(async () => { await save([{ ...r, action: b.dataset.a }]); })));
       $("[data-note]", tr).onchange = guard(async (e) => { await save([{ ...r, note: e.target.value }]); toast(t("Note saved")); });
+      $("[data-exp]", tr).onchange = guard(async (e) => {
+        const d = e.target.value;
+        if (d === "keep") return;
+        await save([{ ...r, expires_at: d ? Math.round(Date.now() / 1000) + +d * 86400 : null }]);
+        toast(d ? t("AS{asn} expires {when}", { asn: r.asn, when: ago(Math.round(Date.now() / 1000) + +d * 86400) }) : t("AS{asn} is permanent", { asn: r.asn }));
+      });
       $("[data-del]", tr).onclick = guard(async () => {
         if (!(await confirmDlg(t("Remove rule"), t("Remove AS{asn} {name}? Its ranges are released on the next apply.", { asn: r.asn, name: esc(r.name) }), t("Remove"), "danger"))) return;
         await api("/asns/" + r.asn, { method: "DELETE" }); await reload();
@@ -603,7 +620,7 @@ async function viewAsns(el) {
     syncBulk();
   };
   const reload = async () => { rules = await api("/asns"); draw(); refreshOverview(); };
-  const save = async (rs) => { if (await putRules("/asns", rs.map((r) => ({ asn: r.asn, name: r.name, action: r.action, note: r.note })))) await reload(); };
+  const save = async (rs) => { if (await putRules("/asns", rs.map((r) => ({ asn: r.asn, name: r.name, action: r.action, note: r.note, expires_at: r.expires_at ?? null })))) await reload(); };
   draw();
   $("#filter").oninput = draw;
   $$("[data-bulk]").forEach((b) => (b.onclick = guard(async () => {
@@ -880,7 +897,7 @@ const auditName = (a) => ({ "asn.put": t("ASN rule saved"), "asn.delete": t("ASN
   "watch.delete": t("Watched IP removed"), "settings.put": t("Settings changed"), "notify.put": t("Notifications changed"), "crowdsec.put": t("CrowdSec connection changed"),
   "crowdsec.cleanup": t("Old decisions removed"), "run.apply": t("Run started"), login: t("Signed in"), "setup.auth": t("Initial setup"),
   "account.password": t("Password changed"), import: t("Configuration imported"),
-  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed"), "protect.mode": t("Self-protection changed"),
+  "protect.add": t("Self-protection added"), "protect.delete": t("Self-protection removed"), "protect.mode": t("Self-protection changed"), "asn.expired": t("Rules expired"),
   "proxy.trust": t("Proxy trusted"), "proxy.names_learned": t("Proxy container name learned") }[a] ?? a);
 async function viewAudit(el) {
   const rows = await api("/audit");

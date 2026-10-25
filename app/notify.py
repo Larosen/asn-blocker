@@ -88,14 +88,15 @@ def same_host(a, b):
         return False
 
 
-def link(run_id=None, base=None):
+def link(run_id=None, base=None, page="overview"):
     if not base:
         return None
-    return f"{base}/#/runs/{run_id}" if run_id else f"{base}/#/overview"
+    return f"{base}/#/runs/{run_id}" if run_id else f"{base}/#/{page}"
 
 
-def send(title, message, level="error", run_id=None, raise_errors=False, cfg=None):
-    """cfg: (url, format, token, public_url) to use instead of the saved settings – for testing unsaved values."""
+def send(title, message, level="error", run_id=None, raise_errors=False, cfg=None, page="overview"):
+    """cfg: (url, format, token, public_url) to use instead of the saved settings – for testing unsaved values.
+    page: the view a notification without a run links to."""
     if cfg:
         url, fmt, token, base = cfg
     else:
@@ -103,7 +104,7 @@ def send(title, message, level="error", run_id=None, raise_errors=False, cfg=Non
     if not url:
         return
     prio, tags, gotify_prio = LEVELS.get(level, LEVELS["error"])
-    click = link(run_id, base)
+    click = link(run_id, base, page)
     headers = {"User-Agent": USER_AGENT}
     try:
         check_target(url)

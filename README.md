@@ -202,6 +202,10 @@ AS14061  # DigitalOcean
 
 Rule changes take effect with the next run. Click **Apply** to run now, or wait for the schedule.
 
+A rule can be **temporary**: set its lifetime (7, 30 or 90 days, 1 year) in the *Expires* column. When the time is
+up, the rule is removed and its ranges are released right away – useful to give an attacking network a timeout and
+reassess it later instead of blocking it forever.
+
 ### Exemptions
 
 Exemptions are cut out of every blocked range.
@@ -258,7 +262,8 @@ A firewall bouncer applies bans to *all* traffic, including SSH. To keep you fro
 Add IPs that must stay reachable – your phone, monitoring, a customer – under **Exemptions → Watched IPs**. After
 every run they are checked; if one would be affected, you get a notification.
 
-Notifications are sent when a run fails, when the sanity check stops a run, and when a watched IP is affected.
+Notifications are sent when a run fails, when the sanity check stops a run, when a watched IP is affected, and when
+networks newly qualify for a recommendation under **Attackers** (each network at most once in 30 days).
 Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
 webhook. **Send test** checks the values before they are saved and reports the server's answer, e.g. a rejected
 token; **Save** is only possible after a successful test. Each notification links to the run it is about.
@@ -287,6 +292,7 @@ when they were last seen. Community blocklists, manual decisions and asn-blocker
 
 A hosting network with 5 or more attacking IPs gets a recommendation – *Block*, or *Captcha* for very large clouds and
 transit networks – and can be added with one click (the usual confirmations for consumer and your own networks apply).
+**New rules** sets whether such a rule is permanent or expires after 30 or 90 days.
 Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
 alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
 CrowdSec's GeoIP enrichment, or from RIPEstat if the alert has none.
