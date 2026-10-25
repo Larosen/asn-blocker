@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4 (2026-10-25)
+- **Fix:** while a run was in progress, the page jittered every 1–2 seconds (each status update replayed the fade-in
+  of the runs view and briefly emptied the run details) and the *View* button in the bottom bar could not be tapped
+  (it was re-created under the finger, and on the runs page it pointed to the page already open). Updates now only
+  change what actually changed; the button is hidden on the runs page; the log keeps its scroll position.
+
 ## 0.7.3 (2026-10-24)
 - **Attackers**: networks behind CrowdSec's own detections on this server (7/30/90 days) – attacking IPs, alerts,
   scenarios and last sighting per ASN, with a recommendation (*Block*, or *Captcha* for large clouds and transit
