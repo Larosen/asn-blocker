@@ -186,7 +186,7 @@ label.field > small { color: var(--text-3); }
 .btn.sm { min-height: 26px; padding: 2px 9px; font-size: 12.5px; border-radius: var(--r-sm); }
 .btn:disabled { opacity: .45; cursor: default; transform: none; }
 .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-sm); overflow: hidden; background: var(--bg-0); }
-.seg button { border: 0; background: transparent; padding: 3px 11px; cursor: pointer; font-size: 12.5px; color: var(--text-2); transition: background-color var(--d-fast), color var(--d-fast); }
+.seg button { border: 0; background: transparent; padding: 3px 11px; cursor: pointer; font-size: 12.5px; white-space: nowrap; color: var(--text-2); transition: background-color var(--d-fast), color var(--d-fast); }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button:hover { color: var(--text-1); background: var(--bg-2); }
 .seg button[aria-pressed="true"].ban { background: var(--ban-bg); color: var(--ban); font-weight: 600; }
@@ -204,6 +204,8 @@ tbody tr:hover td { background: var(--bg-2); }
 td.actions { text-align: right; white-space: nowrap; width: 1%; }
 td input.inline { border-color: transparent; background: transparent; width: 100%; min-width: 120px; }
 td input.inline:hover, td input.inline:focus { border-color: var(--line-strong); background: var(--bg-0); }
+td select.inline { border-color: transparent; background-color: transparent; min-width: 110px; }
+td select.inline:hover, td select.inline:focus { border-color: var(--line-strong); background-color: var(--bg-0); }
 .empty { padding: 32px 16px; text-align: center; color: var(--text-3); }
 .table-wrap { overflow-x: auto; position: relative; }
 
@@ -336,7 +338,7 @@ dialog .df { padding: 12px 16px; border-top: 1px solid var(--line); display: fle
   .grid2, .split, .atlas { grid-template-columns: 1fr; }
   .atlas { padding: 14px; gap: 18px; }
   .ipcheck { width: 150px; }
-  .cmdk-btn .lbl { display: none; }
+  .cmdk-btn { display: none; }  /* touch devices: no keyboard shortcut to show */
   .suggest .item { grid-template-columns: 1fr auto; }
   .hide-sm { display: none; }
 }
@@ -381,3 +383,5 @@ h3.inline-h { margin: 0; }
 .check.mid { align-self: center; margin-bottom: 12px; }
 .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 .sugg { margin-top: 12px; } .sugg h3 { margin: 0; } .sugg p { margin: 6px 0; } .sugg .note { margin: 6px 0; }
+.note.hint { margin: -14px 0 28px; }
+.seg.mt-xs { display: flex; width: max-content; margin-top: 6px; }

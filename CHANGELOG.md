@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.3 (2026-10-24)
+- **Attackers**: networks behind CrowdSec's own detections on this server (7/30/90 days) – attacking IPs, alerts,
+  scenarios and last sighting per ASN, with a recommendation (*Block*, or *Captcha* for large clouds and transit
+  networks; never for consumer networks) and one-click rules. The IPs of an ASN are listed on click.
+- Alerts are read incrementally about every hour (at most 5,000 per read) and summarised per IP and day for 180 days,
+  so the history outlasts CrowdSec's own alert retention; community blocklists, manual and own decisions are excluded
+- The overview points out networks that keep attacking; a notification is sent when networks newly qualify for a
+  recommendation (each at most once in 30 days)
+- **Temporary rules**: a rule can expire after 7, 30 or 90 days or 1 year (*Expires* column, and *New rules* in
+  Attackers). Expired rules are removed and their ranges released right away; export and import keep the lifetime
+- **Self-protection protects single IPs by default.** A protected ASN now has a mode: *at most captcha* (new
+  default – never banned, ban rules and bans from other sources inside it become captcha, so SSH stays reachable
+  while brute force from that network still meets a captcha) or *never blocked* (the previous behaviour).
+  Existing protected ASNs keep *never blocked*; switch them with one click under Exemptions → Self-protection.
+  CLI: `protect` (IP only), `protect --asn` (at most captcha), `protect --asn-exempt`. API: `PUT /api/protect/asn/{asn}`
+
 ## 0.7.2 (2026-10-24) – new interface
 - **New design system**: calm, near-monochrome surfaces with hairlines instead of shadows; colours in OKLCH derived
   from three inputs (neutral base, one accent, contrast), so Light, Dark and OLED stay consistent; Geist Sans/Mono

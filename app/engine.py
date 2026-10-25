@@ -11,7 +11,7 @@ import threading
 import time
 from collections import defaultdict
 
-from . import crowdsec, db, netset, notify, selfprotect, sources
+from . import attackers, crowdsec, db, netset, notify, selfprotect, sources
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
 # Never blocked, whatever a source says: private, loopback, link-local, CGNAT, documentation, multicast, reserved
@@ -48,8 +48,21 @@ CONFIRM_TOLERANCE = 5  # % a confirmed run's result may differ from the stopped 
 # --- Desired state -------------------------------------------------------------------------
 
 def rules():
-    asn_rules = {r["asn"]: r for r in db.q("SELECT * FROM asn_rules")}
-    return asn_rules
+    """Active ASN rules – an expired rule no longer counts, even before the scheduler has removed it."""
+    return {r["asn"]: r for r in db.q("SELECT * FROM asn_rules WHERE expires_at IS NULL OR expires_at > ?", (time.time(),))}
+
+
+def expire_rules():
+    """Removes rules whose time is up. Returns the removed ASNs."""
+    with db.tx() as c:
+        gone = [dict(r) for r in c.execute("SELECT asn, name, action FROM asn_rules WHERE expires_at <= ?", (time.time(),))]
+        if gone:
+            c.executemany("DELETE FROM asn_rules WHERE asn=?", [(r["asn"],) for r in gone])
+            db.bump_rev(c)
+    if gone:
+        db.audit("scheduler", "asn.expired", [{"asn": r["asn"], "action": r["action"]} for r in gone])
+        log_.info("Rules expired: %s", ", ".join(f"AS{r['asn']}" for r in gone))
+    return [r["asn"] for r in gone]
 
 
 def build(log, fresh=True):
@@ -90,12 +103,18 @@ def build(log, fresh=True):
     exempt += [(n, "Non-public range") for n in NON_PUBLIC]
     guard = guard_ips()
     exempt += [(ipaddress.ip_network(ip), label) for ip, label in guard.items()]
-    prot_asns = sorted(selfprotect.protected_asns())
-    for asn, p in sources.prefixes_many(prot_asns, use_cache=not fresh).items():
+    prot_asns = sorted(selfprotect.protected_asns("exempt"))
+    capped_asns = sorted(selfprotect.protected_asns("captcha"))
+    capped = []  # networks that may get a captcha but are never banned
+    for asn, p in sources.prefixes_many(prot_asns + capped_asns, use_cache=not fresh).items():
         if not p:  # fail closed like exempt ASNs: better no run than a run without the protection
             raise sources.SourceError(f"Self-protection AS{asn}: no prefixes")
-        exempt += [(n, f"Self-protection AS{asn}") for n in _plausible(netset.parse(p), f"protected AS{asn}", log)]
-    log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs")
+        nets = _plausible(netset.parse(p), f"protected AS{asn}", log)
+        if asn in capped_asns:
+            capped += nets
+        else:
+            exempt += [(n, f"Self-protection AS{asn}") for n in nets]
+    log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs never blocked, {len(capped_asns)} ASNs at most captcha")
 
     log("Collecting ASN ranges")
     asn_rules = rules()
@@ -110,6 +129,10 @@ def build(log, fresh=True):
     for asn in set(asn_rules) & set(prot_asns):
         log(f"  AS{asn} is protected (self-protection) – rule ignored")
         del asn_rules[asn]
+    for asn in set(asn_rules) & set(capped_asns):
+        if asn_rules[asn]["action"] == "ban":
+            log(f"  AS{asn} is protected against bans – captcha instead")
+            asn_rules[asn] = {**asn_rules[asn], "action": "captcha"}
     raw = {"ban": [], "captcha": []}
     prefixes = sources.prefixes_many(asn_rules, use_cache=not fresh)
     spamhaus = [0, 0]  # ASNs, prefixes – summarized instead of hundreds of individual lines
@@ -127,8 +150,12 @@ def build(log, fresh=True):
 
     log("Carving out exemptions")
     ex_nets = [n for n, _ in exempt]
-    ban = netset.subtract(raw["ban"], ex_nets)
-    captcha = netset.subtract(raw["captcha"], ex_nets + ban)  # captcha only where not already banned
+    ban = netset.subtract(raw["ban"], ex_nets + capped)
+    # bans that fall into networks protected against bans (e.g. through Spamhaus or another ASN's prefix) become captcha
+    downgraded = netset.subtract(raw["ban"], ex_nets + ban) if capped else []
+    captcha = netset.subtract(raw["captcha"] + downgraded, ex_nets + ban)  # captcha only where not already banned
+    if downgraded:
+        log(f"  {len(downgraded)} ranges in networks protected against bans: captcha instead of ban")
     log(f"  ban: {len(ban)} ranges, captcha: {len(captcha)} ranges, {len(netset.collapse(ex_nets))} exempt networks")
     # hard final check: no protected IP may end up in a block
     for ip, label in guard.items():
@@ -470,15 +497,25 @@ def next_due():
 
 
 def scheduler():
-    last_prune = 0.0
+    last_prune = last_attackers = 0.0
+    release = False  # expired rules are released right away instead of at the next regular run
     while True:
         try:
+            release = bool(expire_rules()) or release
             due = next_due()
-            if due and due <= time.time() and not is_running():
+            if due and (release or due <= time.time()) and not is_running():
+                release = False
                 run("apply", "scheduler")
             if time.time() - last_prune > 86400:
                 db.prune()
                 last_prune = time.time()
+            if db.get("crowdsec_mode") and time.time() - (db.get("attackers_updated") or 0) > 3600 \
+                    and time.time() - last_attackers > 900:
+                last_attackers = time.time()
+                try:
+                    attackers.collect()
+                except (crowdsec.CrowdSecError, sources.SourceError) as e:
+                    log_.warning("Attackers: %s", e)
             updated = db.get("asn_names_updated") or 0
             if time.time() - updated > 7 * 86400:
                 try:

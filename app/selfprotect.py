@@ -110,22 +110,39 @@ def ssh_sessions(path: Path | None = None, sessions_dir: Path | None = None):
     return [], ("not readable: " + "; ".join(errors)) if errors else "not mounted"
 
 
+ASN_MODES = ("exempt", "captcha")  # never blocked | at most behind a captcha (never banned)
+
+
 def protected():
-    return db.q("SELECT kind, value, note, created FROM protected ORDER BY kind, value")
+    return db.q("SELECT kind, value, note, created, mode FROM protected ORDER BY kind, value")
 
 
-def protected_asns():
-    return {int(r["value"]) for r in db.q("SELECT value FROM protected WHERE kind='asn'")}
+def protected_asns(mode=None):
+    """Protected ASNs, optionally only those with the given mode."""
+    rows = db.q("SELECT value, mode FROM protected WHERE kind='asn'")
+    return {int(r["value"]) for r in rows if mode is None or r["mode"] == mode}
 
 
-def add(kind: str, value: str, note: str = ""):
+def add(kind: str, value: str, note: str = "", mode: str = "exempt"):
     with db.tx() as c:
-        c.execute("INSERT OR REPLACE INTO protected(kind,value,note,created) VALUES(?,?,?,?)", (kind, value, note, time.time()))
+        c.execute("INSERT OR REPLACE INTO protected(kind,value,note,created,mode) VALUES(?,?,?,?,?)",
+                  (kind, value, note, time.time(), mode if kind == "asn" else "exempt"))
         db.bump_rev(c)
 
 
-def protect_ip(ip: str, note: str, with_asn: bool = True):
-    """Protects an IP and (optionally) its ASN. Returns the protected ASNs."""
+def set_mode(asn: int, mode: str) -> bool:
+    if mode not in ASN_MODES:
+        raise ValueError(mode)
+    with db.tx() as c:
+        n = c.execute("UPDATE protected SET mode=? WHERE kind='asn' AND value=?", (mode, str(asn))).rowcount
+        if n:
+            db.bump_rev(c)
+    return bool(n)
+
+
+def protect_ip(ip: str, note: str, with_asn: bool = False, asn_mode: str = "captcha"):
+    """Protects an IP and, optionally, its ASN (by default only against bans, captcha stays possible).
+    Returns the protected ASNs."""
     from . import sources
 
     ip = str(_canonical(ipaddress.ip_address(ip)))
@@ -134,6 +151,6 @@ def protect_ip(ip: str, note: str, with_asn: bool = True):
     if with_asn and ipaddress.ip_address(ip).is_global:
         info = sources.ip_info(ip)
         for asn in info["asns"]:
-            add("asn", str(asn), f"{note} ({ip})")
+            add("asn", str(asn), f"{note} ({ip})", asn_mode)
             asns.append(asn)
     return asns

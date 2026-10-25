@@ -202,6 +202,10 @@ AS14061  # DigitalOcean
 
 Rule changes take effect with the next run. Click **Apply** to run now, or wait for the schedule.
 
+A rule can be **temporary**: set its lifetime (7, 30 or 90 days, 1 year) in the *Expires* column. When the time is
+up, the rule is removed and its ranges are released right away – useful to give an attacking network a timeout and
+reassess it later instead of blocking it forever.
+
 ### Exemptions
 
 Exemptions are cut out of every blocked range.
@@ -233,11 +237,21 @@ A firewall bouncer applies bans to *all* traffic, including SSH. To keep you fro
   `/var/run/utmp:/host/utmp:ro` on systems without systemd-logind. Some current distributions no
   longer have a utmp file. The IPs of these sessions are never blocked. **Exemptions → Self-protection** shows whether
   sessions are detected.
-- **Protected IPs and ASNs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed
-  run. Rules for protected ASNs are rejected. Home connections usually change their IP, so protect the **ASN** of
-  your internet provider. From an SSH session, one command does this:
+- **Protected IPs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed run.
+  By default only the IP itself is protected. Home connections usually change their IP, so you can also protect
+  its **ASN**, in one of two modes:
+  - **At most captcha** (default): the network is never banned. Ban rules for it become captcha, and bans from
+    other sources inside it are downgraded to captcha. Firewall bouncers ignore captchas, so SSH stays reachable,
+    while web visitors from that network still have to solve a captcha.
+  - **Never blocked**: the whole network is exempt from everything. Rules for it are rejected. Use this only for
+    small networks you control – a big provider network also carries attackers.
+
+  The mode can be switched per ASN with one click. Independently of this, CrowdSec keeps banning single attacking
+  IPs from a protected network itself. From an SSH session, one command protects your connection:
   ```bash
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP and ASN of this SSH connection
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP of this SSH connection
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn    # … and its ASN, at most captcha
+  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn-exempt  # … and its ASN, never blocked
   docker exec asn-blocker python -m app.cli protect --list                  # show what is protected
   ```
 - The **Overview** warns if the IP you are browsing from is affected by a block, with a one-click exemption.
@@ -248,7 +262,8 @@ A firewall bouncer applies bans to *all* traffic, including SSH. To keep you fro
 Add IPs that must stay reachable – your phone, monitoring, a customer – under **Exemptions → Watched IPs**. After
 every run they are checked; if one would be affected, you get a notification.
 
-Notifications are sent when a run fails, when the sanity check stops a run, and when a watched IP is affected.
+Notifications are sent when a run fails, when the sanity check stops a run, when a watched IP is affected, and when
+networks newly qualify for a recommendation under **Attackers** (each network at most once in 30 days).
 Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
 webhook. **Send test** checks the values before they are saved and reports the server's answer, e.g. a rejected
 token; **Save** is only possible after a successful test. Each notification links to the run it is about.
@@ -268,6 +283,19 @@ If ntfy runs on the same Docker network, the internal address (e.g. `http://ntfy
 through the reverse proxy – an SSO-protected proxy route would reject the request.
 
 For **Gotify**, use `https://gotify.example.com/message` and the application token as access token.
+
+### Attackers: which networks to block
+
+**Attackers** shows the networks behind the IPs that your own CrowdSec caught on this server – brute force, scans,
+exploit attempts – over the last 7, 30 or 90 days: attacking IPs and alerts per ASN, the most frequent scenarios and
+when they were last seen. Community blocklists, manual decisions and asn-blocker's own decisions are not counted.
+
+A hosting network with 5 or more attacking IPs gets a recommendation – *Block*, or *Captcha* for very large clouds and
+transit networks – and can be added with one click (the usual confirmations for consumer and your own networks apply).
+**New rules** sets whether such a rule is permanent or expires after 30 or 90 days.
+Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
+alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
+CrowdSec's GeoIP enrichment, or from RIPEstat if the alert has none.
 
 ### Spamhaus ASN-DROP
 
@@ -334,7 +362,7 @@ Changes are listed in the [changelog](CHANGELOG.md).
 ```bash
 docker exec asn-blocker python -m app.cli reset-auth        # forgot the password: prints a new setup token
 docker exec asn-blocker python -m app.cli trust-proxy NAME  # proxy changed: trust it by container name, IP or CIDR
-docker exec asn-blocker python -m app.cli protect [IP]      # protect an IP and its ASN (see Lockout protection)
+docker exec asn-blocker python -m app.cli protect [IP] [--asn]  # protect an IP (and its ASN, see Lockout protection)
 docker exec asn-blocker python -m app.cli check-sources     # test all external data sources
 ```
 
