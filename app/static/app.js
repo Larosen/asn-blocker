@@ -304,7 +304,7 @@ function renderBanners() {
   if (ov.last_apply?.status === "failed") b.push(`<div class="banner danger"><span class="dot failed"></span><span>${t("Last run failed ({when}).", { when: ago(ov.last_apply.started_at) })}</span><a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Details")}</a></div>`);
   if (ov.last_apply?.status === "blocked") b.push(`<div class="banner warn"><span class="dot blocked"></span><span>${t("The last run was stopped by the sanity check – CrowdSec is unchanged.")} ${esc(stopReasons(ov.last_apply).join(" · "))}</span>
     <a class="btn sm" href="#/runs/${ov.last_apply.id}">${t("Review changes")}</a><button class="btn sm danger" data-confirm-run>${t("Apply anyway")}</button></div>`);
-  $("#banners").innerHTML = b.join("");
+  if (!setHtml($("#banners"), b.join(""))) return;
   $("[data-confirm-run]")?.addEventListener("click", () => reviewStopped(ov.last_apply));
   $("[data-exempt-me]")?.addEventListener("click", guard(async (e) => {
     await api("/exemptions", { method: "POST", body: { kind: "cidr", value: e.target.dataset.exemptMe, note: t("own IP") } });
@@ -313,26 +313,37 @@ function renderBanners() {
   }));
 }
 
+// Replaces an element's content only if it changed (returns true then) – polling must not re-create buttons
+// under the user's finger or replay entrance animations
+function setHtml(el, html) {
+  if (el.dataset.html === html) return false;
+  el.dataset.html = html;
+  el.innerHTML = html;
+  return true;
+}
+
 // Apply bar: shows the expected change (+/- ranges) while rules are not applied yet
 let previewSeq = 0;
 function renderApplyBar() {
   const el = $("#applybar");
-  if (ov.running) {
-    el.innerHTML = `<div class="applybar"><span class="dot running"></span><span>${t("Run in progress …")}</span><span class="spacer"></span><a class="btn sm" href="#/runs">${t("View")}</a></div>`;
+  if (ov.running) {  // on the runs page itself the link would lead nowhere
+    setHtml(el, `<div class="applybar"><span class="dot running"></span><span>${t("Run in progress …")}</span><span class="spacer"></span>${location.hash.startsWith("#/runs") ? "" : `<a class="btn sm" href="#/runs">${t("View")}</a>`}</div>`);
     return;
   }
-  if (!ov.pending) { el.innerHTML = ""; return; }
-  el.innerHTML = `<div class="applybar"><span class="dot warn"></span><span>${t("Rules changed – not active in CrowdSec yet.")}</span>
+  if (!ov.pending) { setHtml(el, ""); return; }
+  if (!setHtml(el, `<div class="applybar" data-rev="${ov.rev}"><span class="dot warn"></span><span>${t("Rules changed – not active in CrowdSec yet.")}</span>
     <span class="muted small mono" id="preview">${t("Computing preview …")}</span><span class="spacer"></span>
     <button class="btn" data-run="plan">${t("Preview")}</button>${ov.last_apply?.status === "blocked"
       ? `<button class="btn danger" data-confirm-run>${t("Apply anyway")}</button>`
-      : `<button class="btn primary" data-run="apply" ${ov.crowdsec_mode ? "" : "disabled"}>${t("Apply")}</button>`}</div>`;
+      : `<button class="btn primary" data-run="apply" ${ov.crowdsec_mode ? "" : "disabled"}>${t("Apply")}</button>`}</div>`)) return;
   $$("[data-run]", el).forEach((b) => (b.onclick = () => startRun(b.dataset.run)));
   $("[data-confirm-run]", el)?.addEventListener("click", () => reviewStopped(ov.last_apply));
-  const my = ++previewSeq;
+  loadPreview(++previewSeq);
+}
+function loadPreview(my) {
   api("/preview").then((p) => {
     if (my !== previewSeq || !$("#preview")) return;
-    if (p.busy) { setTimeout(renderApplyBar, 1500); return; }
+    if (p.busy) { setTimeout(() => loadPreview(my), 1500); return; }
     $("#preview").textContent = p.error ? t("Preview unavailable: {e}", { e: t(p.error) })
       : ["ban", "captcha"].map((k) => `${act(k)} +${fmtNum(p[k].add)} −${fmtNum(p[k].remove)}`).join(" · ");
   }).catch(() => { if ($("#preview")) $("#preview").textContent = ""; });
@@ -392,6 +403,7 @@ function route() {
   document.title = `${viewName(v)} · asn-blocker`;
   clearTimeout(runPoll);
   const el = $("#view");
+  delete el.dataset.live;  // a new view fades in; live updates of the same view (see viewRuns) do not
   el.innerHTML = `<p class="muted">${t("Loading …")}</p>`;
   ({ overview: viewOverview, asns: viewAsns, attackers: viewAttackers, vpn: viewVpn, exemptions: viewExemptions, runs: viewRuns, audit: viewAudit, settings: viewSettings })[v](el, arg)
     ?.catch?.((e) => (el.innerHTML = `<div class="note danger">${esc(e.message)}</div>`));
@@ -857,6 +869,8 @@ const kindName = (k) => (k === "plan" ? t("Preview") : t("Apply"));
 async function viewRuns(el, id) {
   const runs = await api("/runs");
   const sel = id ? Number(id) : runs[0]?.id;
+  const r = sel ? await api("/runs/" + sel) : null;
+  const log = $("pre.log", el), atEnd = log && log.scrollTop + log.clientHeight >= log.scrollHeight - 4, logTop = log?.scrollTop;
   el.innerHTML = `<div class="section"><div class="section-head"><div><p class="small muted">${t("A run recomputes the ranges and syncs them with CrowdSec. “Preview” changes nothing.")}</p></div>
       <div class="row"><button class="btn" data-run="plan">${t("Preview")}</button><button class="btn primary" data-run="apply">${t("Apply now")}</button></div></div>
     <div class="box table-wrap">${runs.length ? `<table><thead><tr><th>#</th><th>${t("Type")}</th><th>${t("Status")}</th><th>${t("Started")}</th><th class="hide-sm">${t("By")}</th><th class="num">Ban</th><th class="num">Captcha</th><th class="num hide-sm">${t("Changes")}</th></tr></thead><tbody>
@@ -868,15 +882,17 @@ async function viewRuns(el, id) {
       </tbody></table>` : `<div class="empty">${t("No runs yet.")}</div>`}</div></div>
     <div id="detail"></div>`;
   $$("[data-run]", el).forEach((b) => (b.onclick = () => startRun(b.dataset.run)));
-  const r = sel ? await runDetail(sel) : null;
+  if (r) runDetail(r);
+  $$(".dot.running", el).forEach((d) => (d.style.animationDelay = `-${Math.round(performance.now() % 1400)}ms`));  // pulse continues across updates
+  const newLog = $("pre.log", el);  // a live update keeps the log where the reader left it
+  if (newLog && log) newLog.scrollTop = atEnd ? newLog.scrollHeight : logTop;
   if (runs.some((x) => x.status === "running") || r?.status === "running") {
     clearTimeout(runPoll);
-    runPoll = setTimeout(() => { if (location.hash.startsWith("#/runs")) viewRuns(el, id).then(refreshOverview); }, 1500);
+    runPoll = setTimeout(() => { if (location.hash.startsWith("#/runs")) { el.dataset.live = "1"; viewRuns(el, id).then(refreshOverview); } }, 1500);
   }
 }
 
-async function runDetail(id) {
-  const r = await api("/runs/" + id);
+function runDetail(r) {
   const s = r.summary || {};
   const changes = r.changes.length ? `<div class="box table-wrap"><table><tbody>${r.changes.slice(0, 200).map((c) => `<tr><td class="mono ${c.op === "+" ? "diff-add" : "diff-del"}">${c.op}</td><td>${statusTag(c.type)}</td><td class="mono">${esc(c.value)}</td></tr>`).join("")}</tbody></table></div>
     ${r.changes.length >= 200 ? `<p class="small muted">${t("First 200 of {n} changes.", { n: r.changes.length >= 500 ? "500+" : r.changes.length })}</p>` : ""}` : `<p class="muted small">${t("No range changes.")}</p>`;
@@ -888,7 +904,6 @@ async function runDetail(id) {
     <div class="grid2"><div><h3>${t("Changes")}</h3>${changes}</div><div><h3>${t("Log")}</h3><pre class="log" tabindex="0">${esc(r.log)}</pre></div></div></div>`;
   $("#force")?.addEventListener("click", () => reviewStopped(r));
   $("#apply-now")?.addEventListener("click", () => startRun("apply"));
-  return r;
 }
 
 // --- Audit log -------------------------------------------------------------------------------------------------------

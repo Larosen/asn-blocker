@@ -21,7 +21,7 @@ log = logging.getLogger("asn_blocker")
 
 STATIC = Path(__file__).parent / "static"
 logging.getLogger("uvicorn.access").addFilter(lambda r: "/healthz" not in r.getMessage())
-VERSION = "0.7.3"
+VERSION = "0.7.4"
 
 
 @asynccontextmanager
@@ -264,6 +264,7 @@ def overview(request: Request, user: str = Depends(require_user)):
                   "exemptions": db.q1("SELECT count(*) n FROM exemptions")["n"],
                   "watch": db.q1("SELECT count(*) n FROM watch_ips")["n"]},
         "pending": db.get("config_rev") != db.get("applied_rev"),
+        "rev": db.get("config_rev"),
         "running": engine.is_running(), "next_run": engine.next_due(),
         "last_apply": _run_row(db.q1("SELECT id,status,started_at,finished_at,summary,triggered_by FROM runs "
                                      "WHERE kind='apply' ORDER BY id DESC LIMIT 1")),

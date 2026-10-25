@@ -136,6 +136,7 @@ kbd, .kbd { display: inline-flex; align-items: center; justify-content: center; 
 .top h1 { flex: 1; }
 .content { padding: 24px 28px 112px; max-width: 1200px; width: 100%; }
 .content > * { animation: enter var(--d-panel) var(--ease-out) both; }
+.content[data-live] > * { animation: none; }
 @keyframes enter { from { opacity: 0; transform: translateY(6px); } }
 .section { margin-bottom: 32px; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
