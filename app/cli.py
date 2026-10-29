@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-from . import auth, db, selfprotect, sources
+from . import auth, db, routing, selfprotect, sources
 from .store import rules as rule_store
 
 
@@ -33,14 +33,15 @@ def check_sources() -> bool:
         if not cond:
             raise AssertionError(msg)
 
-    def ripe_prefixes():
-        p = sources.asn_prefixes(24940, use_cache=False)
+    def ripe_prefixes():  # the fallback, asked directly
+        p = sorted(x["prefix"] for x in sources._ripe("announced-prefixes", "AS24940")["prefixes"])
         v4 = [x for x in p if ":" not in x]
         expect(len(v4) > 10 and all(ipaddress.ip_network(x) for x in p), f"AS24940: only {len(p)} prefixes")
         return f"AS24940 Hetzner: {len(v4)} IPv4 and {len(p) - len(v4)} IPv6 prefixes"
 
     def ripe_ipinfo():
-        r = sources.ip_info("1.1.1.1")
+        r = sources._ripe("network-info", "1.1.1.1", 20)
+        r = {"asns": [int(a) for a in r.get("asns") or []], "prefix": r.get("prefix")}
         expect(13335 in r["asns"], f"1.1.1.1 -> {r}")
         return f"1.1.1.1 -> AS{r['asns'][0]}, {r['prefix']}"
 
@@ -64,6 +65,15 @@ def check_sources() -> bool:
         expect(len(d) > 50 and all(isinstance(x["asn"], int) for x in d), f"only {len(d)} entries")
         return f"{len(d)} ASNs, e.g. AS{d[0]['asn']} {d[0]['name']}"
 
+    def routing_table():
+        n = routing.refresh()  # loads it, exactly as the daily update does
+        p = routing.prefixes(24940) or []
+        expect(len(p) > 10, f"AS24940: only {len(p)} prefixes")
+        hit = routing.lookup("1.1.1.1")
+        expect(13335 in hit["asns"], f"1.1.1.1 -> {hit}")
+        return f"{n:,} prefixes loaded; AS24940: {len(p)} prefixes; 1.1.1.1 -> AS13335 ({hit['prefix']})"
+
+    check("bgp.tools routing table", routing_table)
     check("RIPEstat announced-prefixes", ripe_prefixes)
     check("RIPEstat network-info", ripe_ipinfo)
     check("RIPEstat searchcomplete", ripe_search)

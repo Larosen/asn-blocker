@@ -10,7 +10,7 @@ import threading
 import time
 from collections import defaultdict
 
-from . import attackers, crowdsec, db, netset, notify, selfprotect, sources
+from . import attackers, crowdsec, db, netset, notify, routing, selfprotect, sources
 from .store import exemptions, protection, runs, vpn, watch
 from .store import rules as rule_store
 
@@ -110,7 +110,10 @@ def build(log, fresh=True):
             exempt += [(n, f"Self-protection AS{asn}") for n in nets]
     log(f"  Self-protection: {len(guard)} IPs, {len(prot_asns)} ASNs never blocked, {len(capped_asns)} ASNs at most captcha")
 
-    log("Collecting ASN ranges")
+    st = routing.status()
+    log("Collecting ASN ranges – " + (f"local routing table ({st['prefixes']:,} prefixes, "
+                                      f"{(time.time() - st['updated']) / 3600:.0f} h old)" if routing.fresh()
+                                      else "from RIPEstat (no current local routing table)"))
     asn_rules = rules()
     if db.get("spamhaus_asndrop"):
         drop = sources.spamhaus_asndrop(use_cache=not fresh)
@@ -488,6 +491,11 @@ def scheduler():
                     attackers.collect()
                 except (crowdsec.CrowdSecError, sources.SourceError) as e:
                     log_.warning("Attackers: %s", e)
+            if routing.due():
+                try:
+                    routing.refresh()
+                except routing.RoutingError as e:
+                    log_.warning("Routing table: %s", e)
             updated = db.get("asn_names_updated") or 0
             if time.time() - updated > 7 * 86400:
                 try:

@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from .. import auth, crowdsec, db, engine, notify
+from .. import auth, crowdsec, db, engine, notify, routing
 from .deps import require_user
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
@@ -21,7 +21,8 @@ PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_p
 def get_settings():
     return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password")),
                                                       "notify_url": notify.mask(db.get("notify_url")),
-                                                      "notify_token_set": bool(db.get("notify_token"))}
+                                                      "notify_token_set": bool(db.get("notify_token")),
+                                                      "routing": routing.status()}
 
 
 class Settings(BaseModel):
@@ -169,3 +170,23 @@ def cleanup(body: Cleanup, user: str = Depends(require_user)):
         raise HTTPException(502, str(e))
     db.audit(user, "crowdsec.cleanup", {"reason": body.reason, "deleted": n})
     return {"deleted": n}
+
+
+@router.post("/routing/refresh")
+def refresh_routing(user: str = Depends(require_user)):
+    """Loads the routing table now (in the background, ~1 minute) instead of waiting for the daily update."""
+    if routing.status()["refreshing"]:
+        raise HTTPException(409, "The routing table is being loaded right now")
+    if time.time() - (db.get("routes_tried") or 0) < 600:
+        raise HTTPException(429, "Tried a moment ago – please wait a few minutes")
+
+    def go():
+        try:
+            routing.refresh()
+        except routing.RoutingError:
+            pass  # stored as routes_error and shown in the settings
+
+    db.put("routes_tried", time.time())  # a second click right away gets 429, not a second download
+    threading.Thread(target=go, daemon=True, name="routing").start()
+    db.audit(user, "routing.refresh")
+    return {"ok": True}

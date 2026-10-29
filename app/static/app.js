@@ -926,6 +926,10 @@ function auditDetail(d) {
 }
 
 // --- Settings -------------------------------------------------------------------------------------------------------
+const routingStatus = (r) => `<span class="small">${r.refreshing ? `<span class="dot running"></span>${t("Loading …")}`
+  : r.active ? `<span class="dot ok"></span>${t("{n} prefixes, updated {when}", { n: fmtNum(r.prefixes), when: ago(r.updated) })}`
+  : `<span class="dot warn"></span>${t("Not loaded – RIPEstat is used")}`}${r.error ? ` <span class="muted">· ${t("last attempt failed: {e}", { e: esc(r.error) })}</span>` : ""}</span>`;
+
 async function viewSettings(el) {
   const s = await api("/settings");
   el.innerHTML = `
@@ -981,11 +985,28 @@ async function viewSettings(el) {
     <div class="row"><a class="btn" href="/api/export" download="asn-blocker.json">${t("Export configuration")}</a>
       <label class="btn">${t("Import configuration")}<input type="file" id="imp" accept="application/json" class="sr-only"></label>
       <a class="btn" href="/api/ranges/ban.txt">${t("Active ban ranges")}</a><a class="btn" href="/api/ranges/captcha.txt">${t("Active captcha ranges")}</a></div>
+    <h3 class="mt">${t("Routing table")}</h3>
+    <p class="small muted">${t("Which prefixes every network announces, from bgp.tools – loaded once a day (about 80 MB), so runs and IP lookups need no request per network. Without a current table, RIPEstat is asked instead.")}</p>
+    <div class="row" id="routing">${routingStatus(s.routing)}<span class="spacer"></span><button type="button" class="btn sm" id="routing-refresh" ${s.routing.refreshing ? "disabled" : ""}>${t("Update now")}</button></div>
     <h3 class="mt">${t("Remove decisions of other tools")}</h3>
     <p class="small muted">${t("Remove decisions that other tools or scripts added via cscli, by their reason. CrowdSec's own detections and blocklists are never touched.")}</p>
     <form class="row" id="cleanup"><input type="text" name="reason" class="mono" required minlength="3" placeholder="${t("Reason, e.g. my-old-blocklist")}" aria-label="${t("Reason")}"><button class="btn danger">${t("Remove")}</button></form>
   </div></div>`;
 
+  $("#routing-refresh").onclick = guard(async () => {
+    await api("/routing/refresh", { method: "POST" });
+    toast(t("Loading the routing table – this takes about a minute"));
+    const poll = setInterval(async () => {
+      if (!location.hash.startsWith("#/settings")) return clearInterval(poll);
+      const st = (await api("/settings")).routing;
+      if (st.refreshing) return;
+      clearInterval(poll);
+      $("#routing").firstElementChild.outerHTML = routingStatus(st);
+      $("#routing-refresh").disabled = false;
+      toast(st.error && st.updated < Date.now() / 1000 - 120 ? t("Routing table: {e}", { e: st.error }) : t("Routing table updated"), !!st.error);
+    }, 3000);
+    $("#routing-refresh").disabled = true;
+  });
   const cs = $("#cs");
   cs.mode.value = s.crowdsec_mode || "lapi";
   const csToggle = () => $$("[data-cs]", cs).forEach((d) => (d.hidden = d.dataset.cs !== cs.mode.value));

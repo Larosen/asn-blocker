@@ -195,6 +195,10 @@ DEFAULTS = {
     "attackers_updated": None,       # time of the last successful collection
     "attackers_error": None,         # why the last collection failed, if it did
     "attackers_notified": {},        # ASN -> time of the last "keeps attacking" notification
+    "routes_updated": None,          # local routing table (routing.py, own file routes.db): last complete load
+    "routes_count": 0,
+    "routes_tried": None,
+    "routes_error": None,
 }
 
 

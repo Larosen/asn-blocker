@@ -37,6 +37,7 @@
   "POST /api/logout",
   "POST /api/notify/test",
   "POST /api/protect",
+  "POST /api/routing/refresh",
   "POST /api/runs",
   "POST /api/setup/auth",
   "POST /api/watch",
@@ -337,6 +338,14 @@
    "notify_format": "string",
    "notify_token_set": "bool",
    "notify_url": "string",
+   "routing": {
+    "active": "bool",
+    "error": "null",
+    "prefixes": "number",
+    "refreshing": "bool",
+    "source": "string",
+    "updated": "null"
+   },
    "sanity_percent": "number",
    "spamhaus_asndrop": "null",
    "trusted_proxies": []

@@ -36,10 +36,13 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
 
 ```
  your rules ──► announced prefixes ──► minus exemptions ──► sanity checks ──► CrowdSec LAPI ──► your bouncers
- (ASN + action)   (RIPEstat)            (IPs, ASNs, VPN)      (see Safeguards)   (ban / captcha)
+ (ASN + action)   (routing table)       (IPs, ASNs, VPN)      (see Safeguards)   (ban / captcha)
 ```
 
-1. For each ASN rule, asn-blocker fetches the prefixes the network currently announces (via [RIPEstat](https://stat.ripe.net)).
+1. For each ASN rule, asn-blocker looks up the prefixes the network currently announces – in a local copy of the
+   global routing table from [bgp.tools](https://bgp.tools), loaded once a day (about 80 MB download, 75 MB on
+   disk in `routes.db`). Until it is loaded, or if it could not be refreshed for three days, asn-blocker asks
+   [RIPEstat](https://stat.ripe.net) instead. **Settings → Maintenance** shows its state and can load it right away.
 2. It cuts out all exemptions, then compares the result with what is active in CrowdSec.
 3. It adds new ranges first and removes outdated ones afterwards, so protection never has a gap.
 4. Decisions are created with a limited lifetime (7 days by default) and renewed by every run. If asn-blocker stops
@@ -56,7 +59,8 @@ bouncers (firewall, Traefik, nginx, …) enforce the decisions; nothing else in 
   captcha, such as the [Traefik plugin](https://plugins.traefik.io/plugins/6335346ca4caa9ddeffda116/crowdsec-bouncer-traefik-plugin)
   or the nginx/OpenResty bouncer. Firewall bouncers (nftables/iptables) ignore captcha decisions.
 - **Recommended: a reverse proxy with single sign-on** (e.g. Pangolin, Authentik, Authelia) in front of the UI
-- Outbound HTTPS from the container to stat.ripe.net, bgp.tools and – if used – the VPN provider APIs and spamhaus.org
+- Outbound HTTPS from the container to bgp.tools, stat.ripe.net (fallback) and – if used – the VPN provider APIs and
+  spamhaus.org; about 100 MB of free space in the data volume for the routing table
 
 ## Installation
 
@@ -295,7 +299,7 @@ transit networks – and can be added with one click (the usual confirmations fo
 **New rules** sets whether such a rule is permanent or expires after 30 or 90 days.
 Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
 alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
-CrowdSec's GeoIP enrichment, or from RIPEstat if the alert has none.
+CrowdSec's GeoIP enrichment, or from the routing table if the alert has none.
 
 ### Spamhaus ASN-DROP
 

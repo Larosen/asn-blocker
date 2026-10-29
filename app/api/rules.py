@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .. import auth, db, sources, suggestions
+from .. import auth, db, routing, sources, suggestions
 from ..store import protection
 from ..store import rules as store
 from .deps import require_user, src_call
@@ -36,7 +36,9 @@ def asn_search(q: str = Query(max_length=100)):
 
 
 def _prefix_stats(asn):
-    p = db.cache_get(f"prefixes:{asn}", 7 * 86400)
+    p = routing.prefixes(asn)
+    if p is None:
+        p = db.cache_get(f"prefixes:{asn}", 7 * 86400)
     if p is None:
         return None
     v4 = [ipaddress.ip_network(x) for x in p if ":" not in x]
