@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.6 (2026-10-29) – internal restructuring, no visible change
+- **Numbered database migrations** (SQLite `user_version`): each schema change runs once, in its own transaction;
+  existing databases are recognised and brought up to date without data changes
+- **Data layer** (`app/store/`): one module per area (rules, exemptions, VPN, self-protection, watched IPs, runs and
+  applied state); every table is read and written by exactly one module, enforced by a test
+- **API split into routers** (`app/api/`): session, overview, rules, VPN, exemptions, attackers, settings, runs,
+  export/import – the routes and responses are unchanged (checked by the API contract test)
+
 ## 0.7.5 (2026-10-29)
 - **UI tests in CI**: the web UI is tested in a real browser against an offline demo server with fixed data –
   accessibility (axe, WCAG 2.2 AA) in all themes and views, no horizontal scrolling at 360 px, reduced motion,

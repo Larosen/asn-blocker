@@ -426,8 +426,8 @@ def test_notify_token_bound_to_scheme_host_port():
 
 
 def test_notify_rejects_link_local_and_limits_tests(client, monkeypatch):
-    from app import main as m
     from app import notify
+    from app.api import settings as m
     setup_local(client)
     with pytest.raises(notify.NotifyError):
         notify.check_target("http://169.254.169.254/latest")
