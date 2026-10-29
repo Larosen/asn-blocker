@@ -102,3 +102,62 @@ def test_lookups_stop_at_the_time_budget_and_continue_later(monkeypatch):
     monkeypatch.setattr(attackers, "LOOKUP_BUDGET", 20)
     attackers.collect(be)  # no new alerts, but the missing ASN is filled in
     assert db.q1("SELECT asn FROM attack_ips")["asn"] == 14061
+
+
+def attacked(monkeypatch, *networks):
+    """Collects alerts for (asn, name, class, attacking IPs) with automatic rules switched off, so tests decide when."""
+    monkeypatch.setattr(attackers, "_fetch_sizes", lambda: None)
+    attackers.take_added()  # left over from other tests
+    names(*((asn, name, cls, "DE") for asn, name, cls, _ in networks))
+    be, i = FakeBackend(), 0
+    for asn, _, _, n in networks:
+        for k in range(n):
+            i += 1
+            be.alert_list.append(alert(i, f"{100 + asn % 50}.{k}.0.1", asn=str(asn)))
+    attackers.collect(be)
+
+
+def test_automatic_rules_are_off_by_default(monkeypatch):
+    attacked(monkeypatch, (24940, "HETZNER-AS", "Content", 6))
+    assert attackers.auto_rules() == [] and rules.actions() == {}
+
+
+def test_automatic_rules_follow_the_recommendation(monkeypatch):
+    attacked(monkeypatch, (24940, "HETZNER-AS", "Content", 6), (3320, "DTAG", "Eyeball", 9), (12876, "SCALEWAY", "Content", 5))
+    exemptions.add([("asn", "12876", "")])
+    db.put("attackers_auto", "recommended")
+    now = time.time()
+    added = attackers.auto_rules(now)
+    assert [(r["asn"], r["action"]) for r in added] == [(24940, "ban")]  # never consumer or exempt networks
+    rule = rules.active()[24940]
+    assert rule["source"] == "attackers" and rule["note"].startswith("automatic: 6 attacking IPs")
+    assert rule["expires_at"] == now + 30 * 86400
+    assert attackers.take_added() == added and attackers.take_added() == []
+    assert attackers.auto_rules(now) == []  # now a rule: nothing more to do
+    assert db.audit_log()[0]["user"] == "automatic"
+
+
+def test_automatic_rules_only_captcha(monkeypatch):
+    attacked(monkeypatch, (24940, "HETZNER-AS", "Content", 6))
+    db.put("attackers_auto", "captcha")
+    db.put("attackers_auto_days", 7)
+    assert [(r["asn"], r["action"]) for r in attackers.auto_rules()] == [(24940, "captcha")]
+
+
+def test_a_removed_automatic_rule_stays_removed_for_its_lifetime(monkeypatch):
+    attacked(monkeypatch, (24940, "HETZNER-AS", "Content", 6))
+    db.put("attackers_auto", "recommended")
+    now = time.time()
+    assert attackers.auto_rules(now)
+    rules.delete([24940])
+    assert attackers.auto_rules(now + 86400) == []
+    assert [r["asn"] for r in attackers.auto_rules(now + 31 * 86400)] == [24940]
+
+
+def test_automatic_rules_are_limited_per_collection(monkeypatch):
+    monkeypatch.setattr(attackers, "MAX_AUTO", 2)
+    attacked(monkeypatch, *((64500 + k, f"NET-{k}", "Content", 5) for k in range(4)))
+    db.put("attackers_auto", "recommended")
+    assert len(attackers.auto_rules()) == 2
+    assert len(attackers.auto_rules()) == 2
+    assert len(rules.actions()) == 4

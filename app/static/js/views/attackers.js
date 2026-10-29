@@ -2,7 +2,7 @@
 import { addAsnRule, expiresIn } from "../actions.js";
 import { refreshOverview } from "../app-state.js";
 import { act, ago, api, fmtNum, fmtTime, html, locale, t, useLoad, useState } from "../lib.js";
-import { ClassTag, dialog, guard, toast } from "../ui.js";
+import { ClassTag, confirmDlg, dialog, guard, toast } from "../ui.js";
 
 let lastDays = 7, lastLife = "";  // kept while the app is open
 
@@ -10,6 +10,27 @@ function RecTag({ x }) {
   return x.kind === "recommend" ? html`<span class=${"tag " + x.action}>${t("Recommended:")} ${act(x.action)}</span>`
     : x.kind === "active" ? html`<span class=${"tag " + x.action}>${act(x.action)}</span>`
     : x.kind === "protected" ? html`<span class="tag">${t("protected")}</span>` : html`<span class="tag">${t("watch")}</span>`;
+}
+
+// Opt-in: recommendations become rules with a lifetime after every collection
+function AutoRules({ auto, onSaved }) {
+  const submit = guard(async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target), mode = f.get("mode") || null, days = Number(f.get("days"));
+    if (mode && !auto.mode && !(await confirmDlg(t("Add rules automatically?"),
+      t("Every network that is recommended from now on becomes a rule for {d} days and is applied right away – up to 10 per collection. Consumer networks, exempt and protected networks are never added. You get a notification for each batch.", { d: days }),
+      t("Switch on")))) return;
+    const r = await api("/attackers/auto", { method: "PUT", body: { mode, days } });
+    toast(r.added ? t("{n} networks added – they take effect right away", { n: r.added }) : t("Saved")); onSaved();
+  });
+  return html`<form class="box pad" id="att-auto" onSubmit=${submit}><h2>${t("Automatic rules")}</h2>
+    <div class="grid2"><label class="field"><span>${t("Recommended networks")}</span><select name="mode" value=${auto.mode || ""}>
+        <option value="">${t("only show them (off)")}</option><option value="captcha">${t("add as captcha")}</option>
+        <option value="recommended">${t("add with the recommended action")}</option></select></label>
+      <label class="field"><span>${t("Lifetime")}</span><select name="days" value=${String(auto.days)}>
+        ${[7, 30, 90].map((d) => html`<option value=${d}>${t("{d} days", { d })}</option>`)}</select>
+        <small>${t("Removing an automatic rule keeps the network off for this long.")}</small></label></div>
+    <button class="btn primary">${t("Save")}</button></form>`;
 }
 
 export function Attackers() {
@@ -40,6 +61,7 @@ export function Attackers() {
         <label class="row small">${t("New rules:")} <select id="att-life" aria-label=${t("Lifetime of new rules")} onChange=${(e) => { lastLife = e.target.value; setLife(e.target.value); }}>
           ${[["", t("Permanent")], ["30", t("30 days")], ["90", t("90 days")]].map(([v, l]) => html`<option value=${v} selected=${v === life}>${l}</option>`)}</select></label>
         <button class="btn" id="att-refresh" onClick=${refresh}>${t("Update")}</button></div></div>
+    <${AutoRules} auto=${r.auto} onSaved=${() => { reload(); refreshOverview(); }} />
     ${r.error ? html`<div class="note danger">${t("Could not read CrowdSec's alerts:")} ${r.error}</div>` : null}
     <p class="small muted">${r.updated ? t("Updated {when}", { when: ago(r.updated) }) : t("Not collected yet")}${since ? " · " + t("history since {d} (CrowdSec itself keeps alerts about a week; asn-blocker keeps a summary for 180 days)", { d: since }) : ""}</p>
     <div class="box table-wrap">${r.rows.length ? html`<table><thead><tr><th>ASN</th><th>${t("Name")}</th><th class="num">${t("Attacking IPs")}</th><th class="num hide-sm">${t("Alerts")}</th>

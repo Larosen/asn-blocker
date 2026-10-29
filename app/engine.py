@@ -384,6 +384,8 @@ def scheduler():
                     attackers.collect()
                 except (crowdsec.CrowdSecError, sources.SourceError) as e:
                     log_.warning("Attackers: %s", e)
+            if attackers.take_added():
+                release = True  # automatic rules take effect right away, not at the next regular run
             if routing.due():
                 try:
                     routing.refresh()

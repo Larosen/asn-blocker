@@ -271,7 +271,8 @@ Add IPs that must stay reachable – your phone, monitoring, a customer – unde
 every run they are checked; if one would be affected, you get a notification.
 
 Notifications are sent when a run fails, when the sanity check stops a run, when a watched IP is affected, and when
-networks newly qualify for a recommendation under **Attackers** (each network at most once in 30 days).
+networks newly qualify for a recommendation under **Attackers** (each network at most once in 30 days) or are added
+as automatic rules.
 Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
 webhook. **Send test** checks the values before they are saved and reports the server's answer, e.g. a rejected
 token; **Save** is only possible after a successful test. Each notification links to the run it is about.
@@ -304,6 +305,13 @@ transit networks – and can be added with one click (the usual confirmations fo
 Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
 alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
 CrowdSec's GeoIP enrichment, or from the routing table if the alert has none.
+
+**Automatic rules** (off by default): recommended networks can be added on their own after every collection –
+either always as *Captcha*, or with the recommended action – for 7, 30 or 90 days, and are applied right away.
+The same limits apply as for the recommendation itself: consumer, exempt and protected networks are never added,
+networks protected against bans at most get a captcha, and at most 10 networks are added per collection. Each batch
+is logged and sends a notification. If you remove an automatic rule, the network is not added again until that
+lifetime has passed.
 
 ### Spamhaus ASN-DROP
 

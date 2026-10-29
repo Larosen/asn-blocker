@@ -245,6 +245,9 @@ DEFAULTS = {
     "attackers_updated": None,       # time of the last successful collection
     "attackers_error": None,         # why the last collection failed, if it did
     "attackers_notified": {},        # ASN -> time of the last "keeps attacking" notification
+    "attackers_auto": None,          # automatic rules from attackers: None (off), "captcha" or "recommended"
+    "attackers_auto_days": 30,       # their lifetime
+    "attackers_auto_added": {},      # ASN -> time an automatic rule was added (not added again within its lifetime)
     "routes_updated": None,          # local routing table (routing.py, own file routes.db): last complete load
     "routes_count": 0,
     "routes_tried": None,

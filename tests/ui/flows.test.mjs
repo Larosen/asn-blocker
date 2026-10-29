@@ -95,3 +95,19 @@ test("IP check explains which rule decides", async () => {
   assert.deepEqual(p.errors, []);
   await p.context().close();
 });
+
+test("attackers: switching on automatic rules adds the recommended networks", async () => {
+  const p = await h.page();
+  await open(p, h.base, "attackers");
+  await p.selectOption("#att-auto [name=mode]", "captcha");
+  await p.selectOption("#att-auto [name=days]", "7");
+  await p.click("#att-auto button");
+  const [res] = await Promise.all([p.waitForResponse((r) => r.url().endsWith("/api/attackers/auto")), p.click("#dlg button[value='ok']")]);
+  assert.deepEqual(await res.json(), { ok: true, added: 1 });
+  const r = await rule(64508);
+  assert.equal(r.action, "captcha");
+  assert.equal(r.source, "attackers");
+  assert.ok(r.expires_at < Date.now() / 1000 + 8 * 86400);
+  assert.deepEqual(p.errors, []);
+  await p.context().close();
+});

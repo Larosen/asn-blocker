@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.11 (2026-10-29)
+- **Automatic rules from Attackers** (opt-in, under Attackers): networks that qualify for a recommendation become
+  rules on their own – always as captcha, or with the recommended action – with a lifetime of 7, 30 or 90 days, and
+  are applied right away. Consumer, exempt and protected networks are never added, at most 10 per collection. Each
+  batch is logged (user *automatic*) and sends a notification; a removed automatic rule stays removed for its lifetime
+
 ## 0.7.10 (2026-10-29)
 - **Web UI rebuilt from components**: the single 1,100-line script is now one module per view plus shared parts
   (navigation, apply bar, dialogs, palette), rendered with Preact and htm (16 KB together, vendored), still without

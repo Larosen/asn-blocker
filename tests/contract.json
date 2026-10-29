@@ -44,6 +44,7 @@
   "POST /api/watch",
   "PUT /api/account/password",
   "PUT /api/asns",
+  "PUT /api/attackers/auto",
   "PUT /api/crowdsec",
   "PUT /api/notify",
   "PUT /api/protect/asn/{asn}",
@@ -97,6 +98,10 @@
    }
   ],
   "/api/attackers?days=30": {
+   "auto": {
+    "days": "number",
+    "mode": "null"
+   },
    "days": "number",
    "error": "null",
    "history_since": "string",

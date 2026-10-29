@@ -620,3 +620,13 @@ def test_live_updates_need_a_session(client):
     setup_local(client)
     client.cookies.clear()
     assert client.get("/api/events").status_code == 401
+
+
+def test_automatic_rules_setting(client):
+    setup_local(client)
+    assert client.get("/api/attackers").json()["auto"] == {"mode": None, "days": 30}
+    assert client.put("/api/attackers/auto", headers=H, json={"mode": "everything", "days": 30}).status_code == 422
+    assert client.put("/api/attackers/auto", headers=H, json={"mode": "captcha", "days": 5}).status_code == 422
+    r = client.put("/api/attackers/auto", headers=H, json={"mode": "captcha", "days": 90})
+    assert r.status_code == 200 and r.json() == {"ok": True, "added": 0}
+    assert client.get("/api/attackers").json()["auto"] == {"mode": "captcha", "days": 90}
