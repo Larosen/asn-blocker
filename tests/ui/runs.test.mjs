@@ -40,6 +40,7 @@ test("while a run is in progress the page stays still and View can be tapped", a
   assert.equal(await p.locator("#applybar a").count(), 1);
   await p.locator("#applybar a").tap();
   await p.waitForFunction(() => location.hash === "#/runs");
-  assert.equal(await p.locator("#applybar a").count(), 0, "no View link on the runs page itself");
+  // the page change is handled on hashchange, which can follow the URL change by a moment
+  await p.waitForFunction(() => !document.querySelector("#applybar a"), null, { timeout: 3000 });  // no View link on the runs page
   await p.context().close();
 });
