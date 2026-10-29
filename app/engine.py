@@ -6,6 +6,7 @@ So there is never a gap without protection; any error before writing leaves Crow
 """
 import ipaddress
 import logging
+import random
 import threading
 import time
 from collections import defaultdict
@@ -21,6 +22,7 @@ NON_PUBLIC, MIN_PREFIXLEN = policy.NON_PUBLIC, policy.MIN_PREFIXLEN
 MAX_V4_ADDRESSES = 2**29
 MAX_V6_48S = 2**36
 MAX_RANGES = 150000
+DELETE_BATCH = 200   # deletions between two progress updates
 _lock = threading.Lock()
 log_ = logging.getLogger("asn_blocker.engine")
 
@@ -68,26 +70,33 @@ status_of = policy.status_of
 # --- Reconcile ----------------------------------------------------------------------------------
 
 def diff(desired, current, refresh_before):
-    """current: list of {id,value,until}. Returns (add, delete_ids, refresh_count)."""
+    """current: list of {id,value,until}. Returns (add, delete_ids, refresh_count).
+    A range whose newest decision expires before refresh_before gets a new decision; the old one is left to expire
+    on its own – deleting it would cost one request per range for nothing. Only ranges that are no longer wanted
+    are deleted (all their decisions)."""
     by_value = defaultdict(list)
     for d in current:
         by_value[d["value"]].append(d)
     want = set(desired)
     add, delete, refresh = [], [], 0
     for v in desired:
-        ds = sorted(by_value.get(v, []), key=lambda d: d["until"], reverse=True)
-        if not ds:
+        newest = max((d["until"] for d in by_value.get(v, [])), default=None)
+        if newest is None:
             add.append(v)
-        elif ds[0]["until"] < refresh_before:
+        elif newest < refresh_before:
             add.append(v)
-            delete += [d["id"] for d in ds]
             refresh += 1
-        else:
-            delete += [d["id"] for d in ds[1:]]  # duplicates
     for v, ds in by_value.items():
         if v not in want:
             delete += [d["id"] for d in ds]
     return add, delete, refresh
+
+
+def lifetimes(n_batches, base, interval, rnd=random.random):  # noqa: S311 - spreading, not security
+    """Decision lifetime per batch: between base and base - 20 % (at least three intervals), so that ranges added
+    together are not all due for renewal in the same run again."""
+    spread = max(0.0, min(0.2 * base, base - 3 * interval))
+    return [int(base - spread * rnd()) for _ in range(n_batches)]
 
 
 def _counts():
@@ -158,19 +167,22 @@ def run(kind, user, force=False, confirmed=None):
         raise Busy("A run is already in progress")
     try:
         run_id = runs.create(kind, user)
-        lines = []
+        seq = [0]
 
         def log(msg):
             msg = sources.clean(msg, 600)  # external text must not forge lines in the run log or stdout
-            line = f"{time.strftime('%H:%M:%S')} {msg}"
             log_.info(msg, extra={"run_id": run_id})
-            lines.append(line)
-            runs.set_log(run_id, "\n".join(lines))
+            runs.append_log(run_id, seq[0], f"{time.strftime('%H:%M:%S')} {msg}")
+            seq[0] += 1
+
+        def phase(name, progress=None):
+            runs.set_phase(run_id, kind, name, progress)
 
         status, summary = "failed", {}
         rev = db.get("config_rev")
         try:
             desired, exempt = build(log, fresh=(kind == "apply"))
+            phase("plan")
             summary = {t: len(v) for t, v in desired.items()}
             try:
                 backend = crowdsec.backend()
@@ -206,12 +218,17 @@ def run(kind, user, force=False, confirmed=None):
                 if confirmed:
                     log(f"Confirmed by {user} after review of run #{confirmed[0]}")
                 log("Pushing changes to CrowdSec")
-                for t, reason in REASONS.items():  # all additions first: no gap when a range moves ban <-> captcha
-                    if plan[t][0]:
-                        backend.add(plan[t][0], t, reason, db.get("decision_hours") * 3600)
-                for t in REASONS:
-                    if plan[t][1]:
-                        backend.delete_ids(plan[t][1])
+                # all additions first: no gap when a range moves ban <-> captcha; then the deletions
+                steps = [("add", t, plan[t][0][i:i + crowdsec.BATCH]) for t in REASONS for i in range(0, len(plan[t][0]), crowdsec.BATCH)]
+                steps += [("delete", t, plan[t][1][i:i + DELETE_BATCH]) for t in REASONS for i in range(0, len(plan[t][1]), DELETE_BATCH)]
+                durations = iter(lifetimes(len(steps), db.get("decision_hours") * 3600, db.get("interval_hours") * 3600))
+                for i, (op, t, chunk) in enumerate(steps):
+                    phase("push", i / len(steps))
+                    if op == "add":
+                        backend.add(chunk, t, REASONS[t], next(durations))
+                    else:
+                        backend.delete_ids(chunk)
+                phase("verify")
                 for t, reason in REASONS.items():
                     active = {d["value"] for d in backend.list(reason)}
                     missing = set(desired[t]) - active

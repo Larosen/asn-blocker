@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -599,3 +601,22 @@ def test_cli_untrust_proxy():
     db.put("trusted_proxies", ["watchtower.pangolin", "gerbil.pangolin"])
     assert cli.untrust_proxy(["watchtower.pangolin"]) and db.get("trusted_proxies") == ["gerbil.pangolin"]
     assert not cli.untrust_proxy(["missing"])
+
+
+def test_live_updates_stream(client, monkeypatch):
+    from app.api import events as live
+    setup_local(client)
+    monkeypatch.setattr(live, "MAX_AGE", 1.5)   # the stream ends by itself; the browser would reconnect
+    monkeypatch.setattr(live, "TICK", 0.05)
+    with client.stream("GET", "/api/events") as r:
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+        assert r.headers["x-accel-buffering"] == "no"
+        body = "".join(r.iter_text())
+    states = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    assert states and states[0]["running"] is False and "rev" in states[0]
+
+
+def test_live_updates_need_a_session(client):
+    setup_local(client)
+    client.cookies.clear()
+    assert client.get("/api/events").status_code == 401

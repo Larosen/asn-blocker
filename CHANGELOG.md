@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.9 (2026-10-29)
+- **Live updates**: the web UI follows runs, rule changes and loads through a stream from the server (Server-Sent
+  Events) instead of asking every two seconds; the bottom bar shows the phase of a run (collecting data, comparing,
+  writing to CrowdSec with progress in %, checking). If the stream is interrupted, the UI falls back to polling
+- **Runs as jobs**: phase and progress are stored with the run; the log is appended line by line instead of being
+  rewritten on every line; a run cut off by a restart says so in its log
+- **Fewer requests to CrowdSec**: renewing a decision no longer deletes the old one (it expires on its own) – a
+  renewal of all ranges used to cost one delete request per range. Removals of ranges are sent 8 at a time.
+  Lifetimes of new decisions are spread over up to 20 % (at least three intervals), so renewals are distributed
+  over several runs instead of all ranges at once
+- Before a database upgrade, the copy is now named `asn-blocker.db.schema-v<old version>.bak`
+- Docker: the container stops within 5 seconds even with open live-update connections
+
 ## 0.7.8 (2026-10-29)
 - **One rule model**: ASN rules, exemptions, VPN exemptions, self-protection and Spamhaus ASN-DROP are stored as
   *policies* in one table (source × effect × lifetime, optionally locked for self-protection). One evaluator applies

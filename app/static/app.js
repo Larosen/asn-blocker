@@ -183,6 +183,39 @@ const viewName = (v) => ({ overview: t("Overview"), asns: t("ASNs"), attackers: 
   runs: t("Runs"), audit: t("Log"), settings: t("Settings") }[v]);
 let ov = null, pollTimer = null, runPoll = null;
 
+// Live updates: the server announces changes (rules, runs, phase and progress) over Server-Sent Events; polling is
+// only the fallback while the stream is down
+let live = null, liveState = null, liveViewTimer = null;
+function connectLive() {
+  live?.close();
+  live = new EventSource("/api/events");
+  live.addEventListener("state", (e) => onLiveState(JSON.parse(e.data)));
+  live.onerror = () => { liveState = null; };  // the browser reconnects by itself; until then the timers poll
+}
+const liveOk = () => live?.readyState === EventSource.OPEN && liveState;
+function onLiveState(s) {
+  const before = liveState;
+  liveState = s;
+  if (!before || before.rev !== s.rev || before.applied_rev !== s.applied_rev || before.running !== s.running) refreshOverview();
+  else if (s.run) renderApplyBar();  // phase and progress only
+  if (location.hash.startsWith("#/runs") && (s.running || before?.running) && !liveViewTimer) {
+    liveViewTimer = setTimeout(() => {  // at most one refresh of the run view per second
+      liveViewTimer = null;
+      const el = $("#view");
+      if (!location.hash.startsWith("#/runs") || !el) return;
+      el.dataset.live = "1";
+      viewRuns(el, location.hash.split("/")[2]);
+    }, 700);
+  }
+}
+const PHASES = { sources: () => t("Collecting data"), plan: () => t("Comparing with CrowdSec"), push: () => t("Writing to CrowdSec"), verify: () => t("Checking") };
+function runProgress() {
+  const r = liveState?.run;
+  if (!r) return t("Run in progress …");
+  const p = PHASES[r.phase]?.() ?? t("Run in progress …");
+  return r.progress != null && r.phase === "push" ? `${p} · ${Math.round(r.progress * 100)} %` : `${p} …`;
+}
+
 function renderShell() {
   $("#root").className = "";
   $("#root").innerHTML = `<div class="shell">
@@ -197,12 +230,13 @@ function renderShell() {
       <main class="content" id="view"></main></div></div>
     <div id="applybar" role="region" aria-label="${t("Changes")}" aria-live="polite"></div>`;
   bindTheme();
-  $("#logout")?.addEventListener("click", guard(async (e) => { e.preventDefault(); await api("/logout", { method: "POST" }); boot(); }));
+  $("#logout")?.addEventListener("click", guard(async (e) => { e.preventDefault(); live?.close(); await api("/logout", { method: "POST" }); boot(); }));
   $("#ipcheck").onsubmit = (e) => { e.preventDefault(); const ip = e.target.ip.value.trim(); if (ip) checkIp(ip); };
   $("#cmdk-open").onclick = openPalette;
   window.onhashchange = route;
   route();
   refreshOverview();
+  connectLive();
 }
 
 // --- Command palette (⌘K / Ctrl+K): every main action from the keyboard ------------------------------------
@@ -291,7 +325,7 @@ async function refreshOverview() {
   $$("[data-count]").forEach((el) => (el.textContent = c[el.dataset.count] || ""));
   renderBanners();
   renderApplyBar();
-  pollTimer = setTimeout(refreshOverview, ov.running ? 2000 : 30000);
+  pollTimer = setTimeout(refreshOverview, liveOk() ? 120000 : ov.running ? 2000 : 30000);
 }
 
 function renderBanners() {
@@ -327,7 +361,7 @@ let previewSeq = 0;
 function renderApplyBar() {
   const el = $("#applybar");
   if (ov.running) {  // on the runs page itself the link would lead nowhere
-    setHtml(el, `<div class="applybar"><span class="dot running"></span><span>${t("Run in progress …")}</span><span class="spacer"></span>${location.hash.startsWith("#/runs") ? "" : `<a class="btn sm" href="#/runs">${t("View")}</a>`}</div>`);
+    setHtml(el, `<div class="applybar"><span class="dot running"></span><span>${esc(runProgress())}</span><span class="spacer"></span>${location.hash.startsWith("#/runs") ? "" : `<a class="btn sm" href="#/runs">${t("View")}</a>`}</div>`);
     return;
   }
   if (!ov.pending) { setHtml(el, ""); return; }
@@ -912,7 +946,7 @@ async function viewRuns(el, id) {
   if (newLog && log) newLog.scrollTop = atEnd ? newLog.scrollHeight : logTop;
   if (runs.some((x) => x.status === "running") || r?.status === "running") {
     clearTimeout(runPoll);
-    runPoll = setTimeout(() => { if (location.hash.startsWith("#/runs")) { el.dataset.live = "1"; viewRuns(el, id).then(refreshOverview); } }, 1500);
+    if (!liveOk()) runPoll = setTimeout(() => { if (location.hash.startsWith("#/runs")) { el.dataset.live = "1"; viewRuns(el, id).then(refreshOverview); } }, 1500);
   }
 }
 

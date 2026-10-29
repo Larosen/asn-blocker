@@ -100,9 +100,9 @@ def healthz():
 
 
 from .api import attackers as attackers_api  # noqa: E402 - the routers import this module's app-wide pieces lazily
-from .api import exemptions, overview, rules, runs, session, settings, transfer, vpn  # noqa: E402
+from .api import events, exemptions, overview, rules, runs, session, settings, transfer, vpn  # noqa: E402
 from .api.deps import require_user  # noqa: E402,F401 - kept for callers that import it from here
 
 app.include_router(session.public)
-for _r in (session, overview, rules, vpn, exemptions, attackers_api, settings, runs, transfer):
+for _r in (session, overview, rules, vpn, exemptions, attackers_api, settings, runs, transfer, events):
     app.include_router(_r.router)

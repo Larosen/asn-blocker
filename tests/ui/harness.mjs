@@ -18,10 +18,10 @@ const freePort = () => new Promise((resolve) => {
   const s = createServer().listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
-export async function start() {
+export async function start({ env = {} } = {}) {
   const port = await freePort(), base = `http://127.0.0.1:${port}`;
   const proc = spawn(process.env.PYTHON || "python3", [join(here, "server.py"), mkdtempSync(join(tmpdir(), "asnb-ui-")), String(port)],
-    { stdio: ["ignore", "inherit", "inherit"] });
+    { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, ...env } });
   for (let i = 0; ; i++) {
     try { if ((await fetch(base + "/healthz")).ok) break; } catch { /* not up yet */ }
     if (i > 150 || proc.exitCode !== null) throw new Error("demo server did not start");
