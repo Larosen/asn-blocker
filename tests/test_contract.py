@@ -66,8 +66,16 @@ def client(monkeypatch):
         yield c
 
 
+def _routes(routes):
+    for r in routes:
+        if hasattr(r, "original_router"):  # FastAPI >= 0.140 keeps included routers as one entry
+            yield from _routes(r.original_router.routes)
+        elif hasattr(r, "methods"):
+            yield r
+
+
 def current(client):
-    routes = sorted(f"{m} {r.path}" for r in main.app.routes if hasattr(r, "methods") for m in r.methods if m != "HEAD")
+    routes = sorted(f"{m} {r.path}" for r in _routes(main.app.routes) for m in r.methods if m != "HEAD")
     shapes = {}
     for path in READS:
         r = client.get(path)

@@ -8,6 +8,8 @@
 - **API contract test**: routes and the structure of every read endpoint are compared with a snapshot, so the
   coming internal restructuring cannot change what the UI receives unnoticed
 - Fix: after tapping *View* during a run, the link stayed visible on the runs page until the next status update
+- Fix: on phones narrower than 360 px the VPN page and the exemptions (watched IPs, the SSH mount hint) were wider
+  than the screen; the layout test now also checks 320 px
 
 ## 0.7.4 (2026-10-25)
 - **Fix:** while a run was in progress, the page jittered every 1–2 seconds (each status update replayed the fade-in

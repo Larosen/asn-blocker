@@ -7,18 +7,20 @@ let h;
 before(async () => { h = await start(); });
 after(async () => { await h?.stop(); });
 
-test("no horizontal scrolling at 360 px", async () => {
-  const p = await h.page({ viewport: { width: 360, height: 780 }, colorScheme: "dark" });
-  const overflow = [];
-  for (const v of VIEWS) {
-    await open(p, h.base, v);
-    const o = await p.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-    if (o[0] > o[1]) overflow.push(`${v}: ${o[0]}/${o[1]}`);
-  }
-  assert.deepEqual(overflow, []);
-  assert.deepEqual(p.errors, []);
-  await p.context().close();
-});
+for (const width of [360, 320]) {
+  test(`no horizontal scrolling at ${width} px`, async () => {
+    const p = await h.page({ viewport: { width, height: 780 }, colorScheme: "dark" });
+    const overflow = [];
+    for (const v of VIEWS) {
+      await open(p, h.base, v);
+      const o = await p.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      if (o[0] > o[1]) overflow.push(`${v}: ${o[0]}/${o[1]}`);
+    }
+    assert.deepEqual(overflow, []);
+    assert.deepEqual(p.errors, []);
+    await p.context().close();
+  });
+}
 
 test("reduced motion: no entrance animation, the map is drawn at once", async () => {
   const p = await h.page({ reducedMotion: "reduce" });

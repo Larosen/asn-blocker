@@ -467,7 +467,7 @@ async function viewOverview(el) {
         <tr><td>${t("ASN name list")}</td><td class="num mono">${o.asn_names ? fmtNum(o.asn_names) : `<span class="muted">${t("loading")}</span>`}</td></tr>
       </tbody></table></div></div>
       <div class="section"><div class="section-head"><h2>${t("Watched IPs")}</h2><a class="small" href="#/exemptions">${t("Manage")}</a></div><div class="box">
-        ${watch.length ? `<table><tbody>${watch.map((w) => `<tr><td class="mono">${esc(w.ip)}</td><td>${esc(w.note)}</td><td class="actions">${statusTag(w.last_status)}</td></tr>`).join("")}</tbody></table>`
+        ${watch.length ? `<div class="table-wrap"><table><tbody>${watch.map((w) => `<tr><td class="mono">${esc(w.ip)}</td><td class="hide-sm">${esc(w.note)}</td><td class="actions">${statusTag(w.last_status)}</td></tr>`).join("")}</tbody></table></div>`
           : `<div class="empty">${t("Watched IPs are checked after every run and alert you if they would be blocked – e.g. your own mobile IP.")}</div>`}
       </div></div>
     </div>
@@ -799,7 +799,7 @@ async function viewVpn(el, sel) {
 async function viewExemptions(el) {
   const [ex, watch, prot] = await Promise.all([api("/exemptions"), api("/watch"), api("/protect")]);
   const asns = ex.filter((e) => e.kind === "asn"), cidrs = ex.filter((e) => e.kind === "cidr");
-  const table = (rows, cols, kind) => rows.length ? `<table><tbody>${rows.map((r) => `<tr>${cols(r)}<td class="actions"><button class="btn ghost sm danger" data-del-${kind}="${esc(r.value ?? r.ip)}" aria-label="${t("Remove {v}", { v: esc(r.value ?? r.ip) })}">${t("Remove")}</button></td></tr>`).join("")}</tbody></table>` : "";
+  const table = (rows, cols, kind) => rows.length ? `<div class="table-wrap"><table><tbody>${rows.map((r) => `<tr>${cols(r)}<td class="actions"><button class="btn ghost sm danger" data-del-${kind}="${esc(r.value ?? r.ip)}" aria-label="${t("Remove {v}", { v: esc(r.value ?? r.ip) })}">${t("Remove")}</button></td></tr>`).join("")}</tbody></table></div>` : "";
   const modeName = (m) => (m === "captcha" ? t("at most captcha") : t("never blocked"));
   const protectedIps = new Set(prot.protected.filter((r) => r.kind === "ip").map((r) => r.value));
   const sessRows = prot.sessions.map((s) => `<tr><td class="mono">${esc(s.ip)}</td><td class="hide-sm">${esc(s.user)}@${esc(s.line)}</td>
@@ -829,13 +829,13 @@ async function viewExemptions(el) {
           <button class="btn">${t("Protect")}</button></form>
       </div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Exempt ASNs")}</h2><p class="small muted">${t("Prefixes of these ASNs are never blocked, e.g. VPN providers’ exit networks.")}</p></div></div>
-      <div class="box">${table(asns, (r) => `<td class="mono">AS${esc(r.value)}</td><td>${esc(r.name)}</td><td class="muted">${esc(r.note)}</td>`, "asn")}
+      <div class="box">${table(asns, (r) => `<td class="mono">AS${esc(r.value)}</td><td>${esc(r.name)}</td><td class="muted hide-sm">${esc(r.note)}</td>`, "asn")}
       <form class="row pad-sm" id="add-asn"><input type="text" name="v" class="mono" placeholder="AS207137" required aria-label="ASN"><input type="text" name="n" placeholder="${t("Note")}" aria-label="${t("Note")}"><button class="btn">${t("Add")}</button></form></div></div>
     <div class="section"><div class="section-head"><div><h2>${t("IPs and networks")}</h2><p class="small muted">${t("Single addresses or CIDRs, IPv4 and IPv6.")}</p></div></div>
-      <div class="box">${table(cidrs, (r) => `<td class="mono">${esc(r.value)}</td><td class="muted">${esc(r.note)}</td>`, "cidr")}
+      <div class="box">${table(cidrs, (r) => `<td class="mono">${esc(r.value)}</td><td class="muted hide-sm">${esc(r.note)}</td>`, "cidr")}
       <form class="row pad-sm" id="add-cidr"><input type="text" name="v" class="mono" placeholder="${t("203.0.113.7 or 198.51.100.0/24")}" required aria-label="${t("IP or CIDR")}"><input type="text" name="n" placeholder="${t("Note")}" aria-label="${t("Note")}"><button class="btn">${t("Add")}</button></form></div></div>
     <div class="section"><div class="section-head"><div><h2>${t("Watched IPs")}</h2><p class="small muted">${t("Checked on every run. If one would be affected, it shows in the run log and you get notified. They are not exemptions.")}</p></div></div>
-      <div class="box">${table(watch, (r) => `<td class="mono">${esc(r.ip)}</td><td class="muted">${esc(r.note)}</td><td>${statusTag(r.last_status)}</td>`, "watch")}
+      <div class="box">${table(watch, (r) => `<td class="mono">${esc(r.ip)}</td><td class="muted hide-sm">${esc(r.note)}</td><td>${statusTag(r.last_status)}</td>`, "watch")}
       <form class="row pad-sm" id="add-watch"><input type="text" name="v" class="mono" placeholder="${t("IP address")}" required aria-label="IP"><input type="text" name="n" placeholder="${t("Note, e.g. phone")}" aria-label="${t("Note")}"><button class="btn">${t("Add")}</button></form></div></div>`;
   const re = () => { refreshOverview(); viewExemptions(el); };
   const doProtect = async (ip, withAsn = false, mode = "captcha") => {
