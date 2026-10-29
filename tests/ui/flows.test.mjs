@@ -63,6 +63,7 @@ test("command palette: navigate and check an IP", async () => {
   await p.waitForFunction(() => location.hash === "#/runs");
   await p.keyboard.press("Control+k");
   await p.keyboard.type("203.0.113.10");
+  await p.waitForSelector("#cmdk .cmdk-item[aria-selected='true']:has-text('Check IP 203.0.113.10')");
   await p.keyboard.press("Enter");
   await p.waitForSelector("#dlg[open]");
   assert.equal(await p.textContent("#dlg-title"), "203.0.113.10");

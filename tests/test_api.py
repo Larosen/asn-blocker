@@ -117,7 +117,7 @@ def test_bulk_delete(client):
 
 
 def test_static_js_served_with_csp(client):
-    r = client.get("/static/text.js")
+    r = client.get("/static/js/lib.js")
     assert r.status_code == 200 and "export function t" in r.text
 
 
@@ -307,11 +307,11 @@ def test_ntfy_request_and_test_errors(client, monkeypatch):
 
 
 def test_ui_files_are_revalidated(client):
-    for path in ("/", "/static/app.js", "/static/app.css"):
+    for path in ("/", "/static/js/main.js", "/static/app.css"):
         r = client.get(path)
         assert r.status_code == 200 and r.headers["cache-control"] == "no-cache", path
-    etag = client.get("/static/app.js").headers["etag"]
-    assert client.get("/static/app.js", headers={"If-None-Match": etag}).status_code == 304
+    etag = client.get("/static/js/main.js").headers["etag"]
+    assert client.get("/static/js/main.js", headers={"If-None-Match": etag}).status_code == 304
     assert client.get("/api/session").headers["cache-control"] == "no-store"
 
 
