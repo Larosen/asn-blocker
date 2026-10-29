@@ -47,7 +47,7 @@ def test_database_from_before_numbered_migrations(tmp_path, monkeypatch):
     assert rules.listing()[0] | {"updated_at": 0} == {"asn": 64500, "name": "", "action": "ban", "note": "", "source": "manual",
                                                       "updated_at": 0, "expires_at": None, "class": None, "cc": None}
     assert protection.asns("exempt") == {64501}   # protection from before the modes: never blocked
-    assert (f.parent / "old.db.before-v4").exists() is False  # version 0: nothing to keep a copy of
+    assert not list(f.parent.glob("old.db.schema-*"))  # version 0: nothing to keep a copy of
 
 
 def test_migration_to_policies_keeps_every_rule_and_a_backup(tmp_path, monkeypatch):
@@ -80,6 +80,6 @@ def test_migration_to_policies_keeps_every_rule_and_a_backup(tmp_path, monkeypat
     assert protection.asns("captcha") == {64503} and protection.asns("exempt") == {64502}   # exempt and protected: both kept
     assert protection.ips() == [("198.51.100.42", "home")]
     assert lists.spamhaus() == "captcha" and db.q1("SELECT 1 x FROM settings WHERE key='spamhaus_asndrop'") is None
-    assert (tmp_path / "v3.db.before-v4").exists()   # the database as it was, in case the update has to be undone
+    assert (tmp_path / "v3.db.schema-v3.bak").exists()   # the database as it was, in case the update has to be undone
     assert {r["name"] for r in db.q("SELECT name FROM sqlite_master WHERE type='table'")} >= {"policies"} \
         and not {r["name"] for r in db.q("SELECT name FROM sqlite_master WHERE name IN ('asn_rules','exemptions','vpn_rules','protected')")}

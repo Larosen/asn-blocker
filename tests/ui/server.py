@@ -73,6 +73,10 @@ def install_fakes(patch=setattr):
         raise routing.RoutingError("demo: no download")
     patch(routing, "refresh", fake_routing_refresh)
     backend = FakeBackend()
+    if os.environ.get("ASNB_DEMO_SLOW"):  # runs take a few seconds, so the UI tests can watch one in progress
+        add = backend.add
+        patch(backend, "add", lambda *a, **k: (time.sleep(float(os.environ["ASNB_DEMO_SLOW"])), add(*a, **k)))
+        patch(crowdsec, "BATCH", 5)
     patch(crowdsec, "backend", lambda: backend)
     return backend
 

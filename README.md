@@ -45,8 +45,8 @@ removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *
    [RIPEstat](https://stat.ripe.net) instead. **Settings → Maintenance** shows its state and can load it right away.
 2. It cuts out all exemptions, then compares the result with what is active in CrowdSec.
 3. It adds new ranges first and removes outdated ones afterwards, so protection never has a gap.
-4. Decisions are created with a limited lifetime (7 days by default) and renewed by every run. If asn-blocker stops
-   running, its decisions simply expire.
+4. Decisions are created with a limited lifetime (7 days by default) and renewed before they expire; a renewal adds
+   a new decision and lets the old one run out. If asn-blocker stops running, its decisions simply expire.
 
 asn-blocker connects to CrowdSec's Local API (LAPI) as a *machine*, the same way a CrowdSec agent does. Your existing
 bouncers (firewall, Traefik, nginx, …) enforce the decisions; nothing else in your setup changes.
@@ -144,6 +144,10 @@ reached through the Docker network.
 
 Setup checks that the current request actually meets these conditions, so you cannot lock yourself out by a typo.
 Requests that carry the username header twice are rejected. Do not add unauthenticated bypass rules for this route.
+
+Live updates use one long-lived request per open tab (`/api/events`, Server-Sent Events). Proxies that buffer
+responses delay them; nginx honours the `X-Accel-Buffering: no` header the app sends, Traefik and Pangolin need no
+setting. If the stream is cut, the UI falls back to polling.
 
 A trusted proxy given as a private IP is replaced by its container name after the first sign-in through it (when
 Docker's DNS knows the name), so a recreated proxy keeps working and a container that later gets the old IP is not

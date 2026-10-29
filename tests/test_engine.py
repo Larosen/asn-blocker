@@ -4,7 +4,7 @@ import time
 import pytest
 
 from app import crowdsec, db, engine, sources
-from app.store import exemptions, rules, vpn
+from app.store import exemptions, rules, runs, vpn
 from tests.conftest import FakeBackend
 
 PREFIXES = {1: ["11.0.0.0/16"], 2: ["11.0.0.0/8", "2a00:1::/32"], 3: ["11.0.7.0/24"]}
@@ -33,7 +33,8 @@ def env(monkeypatch):
 
 
 def last_run():
-    return db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    r = db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    return r | {"log": runs.log_text(r["id"])}
 
 
 def applied(t):
@@ -82,9 +83,11 @@ def test_expiring_decisions_are_refreshed(env):
     engine.run("apply", "test")
     for d in env.decisions:
         d["until"] = time.time() + 3600  # expires before the next run
+    env.calls.clear()
     engine.run("apply", "test")
-    assert all(d["until"] > time.time() + 86400 for d in env.decisions)
-    assert len(env.decisions) == len(applied("ban")) + len(applied("captcha"))
+    fresh = {d["value"] for d in env.decisions if d["until"] > time.time() + 86400}
+    assert fresh == applied("ban") | applied("captcha")          # every range has a new decision …
+    assert not any(c[0] == "delete" for c in env.calls)          # … and the old ones simply run out
 
 
 def test_source_error_leaves_crowdsec_untouched(env, monkeypatch):
@@ -150,10 +153,17 @@ def test_plan_does_not_write(env):
     assert env.decisions == [] and applied("ban") == set()
 
 
-def test_diff_removes_duplicates():
-    cur = [{"id": 1, "value": "a", "until": 9e12}, {"id": 2, "value": "a", "until": 8e12}, {"id": 3, "value": "b", "until": 9e12}]
-    add, delete, refresh = engine.diff(["a"], cur, time.time())
-    assert add == [] and sorted(delete) == [2, 3] and refresh == 0
+def test_diff_deletes_only_unwanted_ranges():
+    cur = [{"id": 1, "value": "a", "until": 9e12}, {"id": 2, "value": "a", "until": 8e12}, {"id": 3, "value": "b", "until": 9e12},
+           {"id": 4, "value": "c", "until": 100.0}]
+    add, delete, refresh = engine.diff(["a", "c"], cur, 1000.0)
+    assert add == ["c"] and delete == [3] and refresh == 1   # the older decision of a and c simply expire
+
+
+def test_lifetimes_are_spread_but_never_too_short():
+    day = 86400
+    assert engine.lifetimes(3, 7 * day, 2 * day, rnd=iter([0.0, 0.5, 1.0]).__next__) == [7 * day, int(6.5 * day), 6 * day]
+    assert set(engine.lifetimes(5, 4 * day, 2 * day)) == {4 * day}   # less than three intervals of room: no spread
 
 
 def test_go_duration():

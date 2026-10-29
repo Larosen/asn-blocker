@@ -1,9 +1,10 @@
-"""Runs (history, log, changes) and the last applied state (ranges and the origin of every exemption)."""
+"""Runs (history, phase and progress, an append-only log, changes) and the last applied state (ranges and the origin
+of every exemption). Every change is announced to the live updates (events.py)."""
 import json
 import time
 from collections import defaultdict
 
-from .. import db
+from .. import db, events
 from . import watch
 
 KEEP = 100  # runs kept in the history
@@ -17,13 +18,27 @@ def _row(r):
 
 def create(kind, user):
     with db.tx() as c:
-        return c.execute("INSERT INTO runs(kind,status,triggered_by,started_at) VALUES(?,?,?,?)",
-                         (kind, "running", user, time.time())).lastrowid
+        run_id = c.execute("INSERT INTO runs(kind,status,triggered_by,started_at,phase,progress) VALUES(?,?,?,?,?,?)",
+                           (kind, "running", user, time.time(), "sources", 0.0)).lastrowid
+    events.run_state(id=run_id, kind=kind, phase="sources", progress=0.0)
+    return run_id
 
 
-def set_log(run_id, text):
+def append_log(run_id, seq, line):
     with db.tx() as c:
-        c.execute("UPDATE runs SET log=? WHERE id=?", (text, run_id))
+        c.execute("INSERT INTO run_log VALUES(?,?,?)", (run_id, seq, line))
+    events.changed()
+
+
+def set_phase(run_id, kind, phase, progress=None):
+    """phase: sources | plan | push | verify (progress 0..1 within the phase, if known)."""
+    with db.tx() as c:
+        c.execute("UPDATE runs SET phase=?, progress=? WHERE id=?", (phase, progress, run_id))
+    events.run_state(id=run_id, kind=kind, phase=phase, progress=progress)
+
+
+def log_text(run_id):
+    return "\n".join(r["line"] for r in db.q("SELECT line FROM run_log WHERE run_id=? ORDER BY seq", (run_id,)))
 
 
 def add_changes(rows):
@@ -34,25 +49,32 @@ def add_changes(rows):
 
 def finish(run_id, status, summary):
     with db.tx() as c:
-        c.execute("UPDATE runs SET status=?, finished_at=?, summary=? WHERE id=?", (status, time.time(), json.dumps(summary), run_id))
-        c.execute("DELETE FROM run_changes WHERE run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT -1 OFFSET ?)", (KEEP,))
+        c.execute("UPDATE runs SET status=?, finished_at=?, summary=?, phase=NULL, progress=NULL WHERE id=?",
+                  (status, time.time(), json.dumps(summary), run_id))
+        for t in ("run_changes", "run_log"):
+            c.execute(f"DELETE FROM {t} WHERE run_id IN (SELECT id FROM runs ORDER BY id DESC LIMIT -1 OFFSET ?)", (KEEP,))  # noqa: S608
         c.execute("DELETE FROM runs WHERE id IN (SELECT id FROM runs ORDER BY id DESC LIMIT -1 OFFSET ?)", (KEEP,))
+    events.run_state()
 
 
 def mark_interrupted():
     """After a restart: runs that were in progress did not finish."""
     with db.tx() as c:
-        c.execute("UPDATE runs SET status='failed', finished_at=? WHERE status='running'", (time.time(),))
+        for r in c.execute("SELECT id FROM runs WHERE status='running'").fetchall():
+            seq = c.execute("SELECT coalesce(max(seq), -1) + 1 FROM run_log WHERE run_id=?", (r["id"],)).fetchone()[0]
+            c.execute("INSERT INTO run_log VALUES(?,?,?)", (r["id"], seq, f"{time.strftime('%H:%M:%S')} ERROR: interrupted by a restart"))
+        c.execute("UPDATE runs SET status='failed', finished_at=?, phase=NULL, progress=NULL WHERE status='running'", (time.time(),))
 
 
 def listing(limit=30):
-    return [_row(r) for r in db.q("SELECT id,kind,status,triggered_by,started_at,finished_at,summary FROM runs "
+    return [_row(r) for r in db.q("SELECT id,kind,status,triggered_by,started_at,finished_at,summary,phase,progress FROM runs "
                                   "ORDER BY id DESC LIMIT ?", (limit,))]
 
 
 def get(run_id):
     r = _row(db.q1("SELECT * FROM runs WHERE id=?", (run_id,)))
     if r:
+        r["log"] = log_text(run_id)
         r["changes"] = db.q("SELECT op,type,value FROM run_changes WHERE run_id=? LIMIT 500", (run_id,))
     return r
 

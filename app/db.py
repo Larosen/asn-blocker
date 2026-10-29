@@ -97,11 +97,23 @@ def _m4_policies(c):
         c.execute(f"DROP TABLE {t}")
 
 
+def _m5_run_log(c):
+    """Runs: an append-only log (one row per line instead of rewriting the whole text) plus phase and progress."""
+    c.execute("CREATE TABLE run_log (run_id INTEGER NOT NULL, seq INTEGER NOT NULL, line TEXT NOT NULL, "
+              "PRIMARY KEY (run_id, seq)) WITHOUT ROWID")
+    for r in c.execute("SELECT id, log FROM runs WHERE log != ''").fetchall():
+        c.executemany("INSERT INTO run_log VALUES(?,?,?)", [(r["id"], i, line) for i, line in enumerate(r["log"].split("\n"))])
+    c.execute("ALTER TABLE runs DROP COLUMN log")
+    c.execute("ALTER TABLE runs ADD COLUMN phase TEXT")
+    c.execute("ALTER TABLE runs ADD COLUMN progress REAL")
+
+
 MIGRATIONS = [  # (version, description, SQL script or function(connection))
     (1, "base schema", BASE_SCHEMA),
     (2, "self-protection mode per ASN", _m2_protection_mode),
     (3, "lifetime of ASN rules", _m3_rule_lifetime),
     (4, "all rules in one policy table", _m4_policies),
+    (5, "append-only run log, run phase and progress", _m5_run_log),
 ]
 
 
@@ -113,7 +125,7 @@ def migrate():
     c = conn()
     pending = [m for m in MIGRATIONS if m[0] > schema_version(c)]
     if pending and schema_version(c) > 0:  # a copy of the database as it was, in case the update has to be undone
-        backup = DB_FILE.with_name(f"{DB_FILE.name}.before-v{pending[-1][0]}")
+        backup = DB_FILE.with_name(f"{DB_FILE.name}.schema-v{schema_version(c)}.bak")
         backup.unlink(missing_ok=True)
         c.execute("VACUUM INTO ?", (str(backup),))
     for version, _, step in MIGRATIONS:
@@ -252,7 +264,9 @@ def put(key, value, c=None):
 
 def bump_rev(c):
     """Rules changed -> UI shows 'not applied'."""
+    from . import events
     put("config_rev", (get("config_rev") or 0) + 1, c)
+    events.changed()  # may run before the commit: the UI then reads the new state a moment later
 
 
 def audit_log(limit=200):

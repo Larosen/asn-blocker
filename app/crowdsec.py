@@ -4,7 +4,9 @@ import json
 import re
 import secrets
 import tarfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import httpx
@@ -12,6 +14,7 @@ import httpx
 from . import db
 
 BATCH = 500
+DELETE_PARALLEL = 8
 ALERT_LIMIT = 5000  # newest alerts read per collection; bounds memory on very busy hosts
 MANUAL_ORIGINS = ("cscli", "cscli-import")  # decisions added by hand or by scripts via cscli
 _DUR = re.compile(r"(-?[0-9]{1,12}(?:\.[0-9]{1,9})?)(h|ms|m|s|us|µs|ns)")
@@ -65,7 +68,8 @@ class Lapi:
         self.base = url.rstrip("/") + "/v1"
         self.machine_id, self.password = machine_id, password
         self._token, self._exp = None, 0
-        self.http = httpx.Client(timeout=120, follow_redirects=False)
+        self._auth_lock = threading.Lock()
+        self.http = httpx.Client(timeout=120, follow_redirects=False, limits=httpx.Limits(max_connections=DELETE_PARALLEL))
 
     def __del__(self):
         try:
@@ -74,6 +78,10 @@ class Lapi:
             pass
 
     def _auth(self):
+        with self._auth_lock:  # deletions run in parallel: one login for all of them
+            self._login()
+
+    def _login(self):
         if self._token and time.time() < self._exp - 60:
             return
         try:
@@ -120,8 +128,9 @@ class Lapi:
             self._req("POST", "/alerts", json=[_alert(reason, typ, values[i:i + BATCH], duration_s)])
 
     def delete_ids(self, ids):
-        for i in ids:
-            self._req("DELETE", f"/decisions/{i}")
+        """The LAPI deletes one decision per request; a few in parallel keep large removals short."""
+        with ThreadPoolExecutor(DELETE_PARALLEL) as ex:
+            list(ex.map(lambda i: self._req("DELETE", f"/decisions/{int(i)}"), ids))
 
     def alerts(self, since_hours=168, limit=ALERT_LIMIT):
         """Recent alerts of CrowdSec's own detections (community blocklists excluded)."""

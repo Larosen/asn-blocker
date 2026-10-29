@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import crowdsec, db, engine, main, selfprotect, sources
-from app.store import rules
+from app.store import rules, runs
 from tests.conftest import FakeBackend
 from tests.test_api import H, setup_local
 
@@ -56,6 +56,11 @@ def env(monkeypatch, utmp):
     return be
 
 
+def last_run():
+    r = db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    return r | {"log": runs.log_text(r["id"])}
+
+
 def applied():
     return [r["value"] for r in db.q("SELECT value FROM applied WHERE type='ban'")]
 
@@ -70,7 +75,7 @@ def test_protected_asn_rule_ignored_and_prefixes_carved(env):
     selfprotect.protect_ip("84.150.3.10", "home connection", with_asn=True, asn_mode="exempt")
     assert selfprotect.protected_asns() == {5}
     engine.run("apply", "t")
-    run = db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    run = last_run()
     assert run["status"] == "ok" and "AS5 is protected" in run["log"]
     assert engine.status_of("84.150.200.1", {"ban": applied()}) is None  # whole ASN protected, not just the IP
 
@@ -79,7 +84,7 @@ def test_guard_aborts_if_protection_would_be_violated(env, monkeypatch):
     # simulates a bug while carving out: the final check must stop the run
     monkeypatch.setattr(engine.netset, "subtract", lambda src, ex: engine.netset.collapse(src))
     engine.run("apply", "t")
-    run = db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    run = last_run()
     assert run["status"] == "failed" and "Self-protection violated" in run["log"]
     assert env.decisions == []
 
@@ -163,7 +168,7 @@ def test_protection_defaults_to_the_ip_only(env):
 def test_asn_protected_against_bans_only_gets_captcha(env):
     selfprotect.protect_ip("84.150.3.10", "home", with_asn=True, asn_mode="captcha")
     engine.run("apply", "t")
-    run = db.q1("SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+    run = last_run()
     assert run["status"] == "ok" and "AS5 is protected against bans – captcha instead" in run["log"]
     cap = [r["value"] for r in db.q("SELECT value FROM applied WHERE type='captcha'")]
     assert engine.status_of("84.150.200.1", {"ban": applied(), "captcha": cap}) == "captcha"
@@ -179,7 +184,7 @@ def test_ban_from_another_rule_inside_a_capped_network_becomes_captcha(env, monk
     engine.run("apply", "t")
     cap = [r["value"] for r in db.q("SELECT value FROM applied WHERE type='captcha'")]
     assert engine.status_of("84.150.200.1", {"ban": applied(), "captcha": cap}) == "captcha"
-    assert "captcha instead of ban" in db.q1("SELECT log FROM runs ORDER BY id DESC LIMIT 1")["log"]
+    assert "captcha instead of ban" in last_run()["log"]
 
 
 def test_api_protection_modes(env, monkeypatch):

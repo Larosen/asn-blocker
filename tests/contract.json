@@ -12,6 +12,7 @@
   "GET /api/attackers/{asn}",
   "GET /api/audit",
   "GET /api/check/{ip}",
+  "GET /api/events",
   "GET /api/exemptions",
   "GET /api/export",
   "GET /api/overview",
@@ -289,6 +290,8 @@
     "finished_at": "number",
     "id": "number",
     "kind": "string",
+    "phase": "null",
+    "progress": "null",
     "started_at": "number",
     "status": "string",
     "summary": {
@@ -319,6 +322,8 @@
    "id": "number",
    "kind": "string",
    "log": "string",
+   "phase": "null",
+   "progress": "null",
    "started_at": "number",
    "status": "string",
    "summary": {
