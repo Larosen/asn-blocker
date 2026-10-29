@@ -90,3 +90,11 @@ def test_one_policy_per_kind_and_source():
     assert sorted((p["effect"], p["locked"]) for p in policies.listing("asn", "1")) == [("allow", False), ("cap", True), ("captcha", False)]
     with pytest.raises(ValueError):
         policies.upsert([{"source": "asn", "value": 1, "effect": "block"}])
+
+
+def test_sanity_counts_spamhaus_as_a_rule(monkeypatch):
+    """With only Spamhaus enabled and no ranges computed, the run must stop instead of clearing every block."""
+    lists.set_spamhaus("ban")
+    monkeypatch.setattr(sources, "spamhaus_asndrop", lambda use_cache=True: [])
+    with pytest.raises(engine.Blocked, match="0 ranges computed"):
+        engine._sanity({"ban": [], "captcha": []})

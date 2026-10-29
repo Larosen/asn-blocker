@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 
 from . import attackers, crowdsec, db, netset, notify, policy, routing, sources
-from .store import exemptions, runs, vpn, watch
+from .store import exemptions, lists, runs, vpn, watch
 from .store import rules as rule_store
 
 REASONS = {"ban": "asn-blocker ban", "captcha": "asn-blocker captcha"}
@@ -129,7 +129,7 @@ def _sanity(desired, force=False, confirmed=None):
                        f"more than the limit of {MAX_V4_ADDRESSES:,}")
     if v6 > MAX_V6_48S:
         reasons.append(f"{v6:,} IPv6 /48 networks would be blocked, more than the limit of {MAX_V6_48S:,}")
-    if new == 0 and (rule_store.count() or db.get("spamhaus_asndrop")):
+    if new == 0 and (rule_store.count() or lists.spamhaus()):
         reasons.append("Rules exist, but 0 ranges computed")
     if prev:
         pv4, pv6 = _space(runs.applied_values())
