@@ -424,6 +424,11 @@ DATA_DIR=./data uvicorn app.main:app --reload --port 8080
 ```
 
 - Backend: FastAPI and SQLite (`app/`); frontend: plain HTML/CSS/JavaScript without a build step (`app/static/`).
+- UI tests (Playwright and axe in Chromium, against an offline demo server with fixed data):
+  `cd tests/ui && npm ci && npx playwright install chromium && npm test`. The same demo server is handy for
+  development: `python tests/ui/server.py /tmp/asnb-demo 8090`, sign in as `admin` / `correct-horse-battery`.
+- API contract: `tests/contract.json` records the routes and the structure of the read endpoints; record an intended
+  change with `UPDATE_CONTRACT=1 pytest tests/test_contract.py`.
 - Integration test against a real LAPI: set `CROWDSEC_LAPI_URL`, `CROWDSEC_MACHINE_ID` and `CROWDSEC_PASSWORD`, then
   run `pytest tests/test_lapi_integration.py`. CI runs it against CrowdSec 1.8.1 on every push.
 - Dependencies: direct pins in `requirements.in`; `requirements.txt` is the hash-locked set, generated with

@@ -55,10 +55,32 @@ jobs:
       - if: failure()
         run: docker logs crowdsec | tail -50
 
+  # The web UI in a real browser against an offline demo server: axe (WCAG 2.2 AA) in all themes,
+  # phone width, user preferences and the main flows
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: pip install --require-hashes --no-deps -r requirements.txt && pip install -r requirements-dev.txt
+      - name: Install browser test tools (versions locked in package-lock.json)
+        working-directory: tests/ui
+        run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install --with-deps chromium
+      - name: UI tests
+        working-directory: tests/ui
+        run: npm test
+
   # Pull requests: build and scan locally, nothing is pushed, read-only token
   image-pr:
     if: github.event_name == 'pull_request'
-    needs: [test, lapi]
+    needs: [test, lapi, ui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,7 +103,7 @@ jobs:
   # main / tags: push the image by digest only; sha-*, latest and version tags only after the scan passed
   image:
     if: github.event_name == 'push'
-    needs: [test, lapi]
+    needs: [test, lapi, ui]
     runs-on: ubuntu-latest
     permissions:
       contents: read

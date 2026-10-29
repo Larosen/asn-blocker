@@ -336,7 +336,8 @@ dialog .df { padding: 12px 16px; border-top: 1px solid var(--line); display: fle
   #cmdk { margin-top: 8vh; }
   .stats { grid-template-columns: 1fr 1fr; } .stat:nth-child(2) { border-right: 0; } .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .stat .value { font-size: 22px; }
-  .grid2, .split, .atlas { grid-template-columns: 1fr; }
+  .grid2, .split, .atlas { grid-template-columns: minmax(0, 1fr); }  /* 1fr alone would grow to the widest content */
+  .note code { overflow-wrap: anywhere; }
   .atlas { padding: 14px; gap: 18px; }
   .ipcheck { width: 150px; }
   .cmdk-btn { display: none; }  /* touch devices: no keyboard shortcut to show */
