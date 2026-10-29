@@ -24,9 +24,11 @@ test("apply: the run finishes and the apply bar disappears", async () => {
 
 test("while a run is in progress the page stays still and View can be tapped", async () => {
   const p = await h.page({ ...devices["iPhone 13"] });
-  await p.route("**/api/overview", async (r) => { const res = await r.fetch(); r.fulfill({ response: res, json: { ...(await res.json()), running: true } }); });
-  await p.route("**/api/runs", async (r) => { if (r.request().method() !== "GET") return r.continue();
-    const res = await r.fetch(); const j = await res.json(); if (j[0]) j[0].status = "running"; r.fulfill({ response: res, json: j }); });
+  // interceptions still in flight when the page closes would fail; that is not what this test is about
+  const quiet = (fn) => async (r) => { try { await fn(r); } catch { /* page closed meanwhile */ } };
+  await p.route("**/api/overview", quiet(async (r) => { const res = await r.fetch(); await r.fulfill({ response: res, json: { ...(await res.json()), running: true } }); }));
+  await p.route("**/api/runs", quiet(async (r) => { if (r.request().method() !== "GET") return r.continue();
+    const res = await r.fetch(); const j = await res.json(); if (j[0]) j[0].status = "running"; await r.fulfill({ response: res, json: j }); }));
   for (const view of ["runs", "asns"]) {
     await p.goto(`${h.base}/#/${view}`);
     await p.waitForTimeout(2000);
