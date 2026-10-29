@@ -402,6 +402,7 @@ function route() {
   $("#title").textContent = viewName(v);
   document.title = `${viewName(v)} · asn-blocker`;
   clearTimeout(runPoll);
+  if (ov) renderApplyBar();  // its View link depends on the page
   const el = $("#view");
   delete el.dataset.live;  // a new view fades in; live updates of the same view (see viewRuns) do not
   el.innerHTML = `<p class="muted">${t("Loading …")}</p>`;

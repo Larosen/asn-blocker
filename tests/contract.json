@@ -1,0 +1,372 @@
+{
+ "routes": [
+  "DELETE /api/asns/{asn}",
+  "DELETE /api/exemptions/{kind}/{value:path}",
+  "DELETE /api/protect/{kind}/{value:path}",
+  "DELETE /api/watch/{ip}",
+  "GET /",
+  "GET /api/asn/search",
+  "GET /api/asns",
+  "GET /api/asns/suggestions",
+  "GET /api/attackers",
+  "GET /api/attackers/{asn}",
+  "GET /api/audit",
+  "GET /api/check/{ip}",
+  "GET /api/exemptions",
+  "GET /api/export",
+  "GET /api/overview",
+  "GET /api/preview",
+  "GET /api/protect",
+  "GET /api/ranges/{typ}.txt",
+  "GET /api/runs",
+  "GET /api/runs/{run_id}",
+  "GET /api/session",
+  "GET /api/settings",
+  "GET /api/vpn/providers",
+  "GET /api/vpn/{pid}/countries",
+  "GET /api/watch",
+  "GET /healthz",
+  "POST /api/asns/delete",
+  "POST /api/asns/parse",
+  "POST /api/asns/stats",
+  "POST /api/attackers/refresh",
+  "POST /api/crowdsec/cleanup",
+  "POST /api/exemptions",
+  "POST /api/import",
+  "POST /api/login",
+  "POST /api/logout",
+  "POST /api/notify/test",
+  "POST /api/protect",
+  "POST /api/runs",
+  "POST /api/setup/auth",
+  "POST /api/watch",
+  "PUT /api/account/password",
+  "PUT /api/asns",
+  "PUT /api/crowdsec",
+  "PUT /api/notify",
+  "PUT /api/protect/asn/{asn}",
+  "PUT /api/settings",
+  "PUT /api/vpn/{pid}"
+ ],
+ "shapes": {
+  "/api/asns": [
+   {
+    "action": "string",
+    "asn": "number",
+    "cc": "string",
+    "class": "string",
+    "expires_at": "null|number",
+    "name": "string",
+    "note": "string",
+    "source": "string",
+    "stats": "null",
+    "updated_at": "number"
+   }
+  ],
+  "/api/asns/suggestions": {
+   "lists": [
+    {
+     "action": "string",
+     "asns": [
+      {
+       "asn": "number",
+       "name": "string",
+       "note": "string",
+       "present": "bool",
+       "protected": "bool"
+      }
+     ],
+     "description": "string",
+     "id": "string",
+     "title": "string",
+     "warning": "string"
+    }
+   ],
+   "spamhaus": "null"
+  },
+  "/api/attackers/64506?days=30": [
+   {
+    "alerts": "number",
+    "ip": "string",
+    "last_seen": "number",
+    "scenarios": [
+     "string"
+    ]
+   }
+  ],
+  "/api/attackers?days=30": {
+   "days": "number",
+   "error": "null",
+   "history_since": "string",
+   "recommended": "number",
+   "rows": [
+    {
+     "alerts": "number",
+     "asn": "number",
+     "capped": "bool",
+     "cc": "string",
+     "class": "string",
+     "first_day": "string",
+     "ips": "number",
+     "last_seen": "number",
+     "name": "string",
+     "protected": "bool",
+     "recommendation": {
+      "action": "string",
+      "kind": "string",
+      "reason": "string"
+     },
+     "rule": "null|string",
+     "scenarios": [
+      {
+       "n": "number",
+       "name": "string"
+      }
+     ],
+     "size": "null"
+    }
+   ],
+   "updated": "number"
+  },
+  "/api/audit": [
+   {
+    "action": "string",
+    "detail": "string",
+    "id": "number",
+    "ts": "number",
+    "user": "string"
+   }
+  ],
+  "/api/check/203.0.113.10": {
+   "asns": [],
+   "exempt": [
+    "string"
+   ],
+   "global": "bool",
+   "ip": "string",
+   "ranges": {},
+   "status": "null"
+  },
+  "/api/exemptions": [
+   {
+    "kind": "string",
+    "name": "string",
+    "note": "string",
+    "value": "string"
+   }
+  ],
+  "/api/export": {
+   "asns": [
+    {
+     "action": "string",
+     "asn": "number",
+     "expires_at": "null|number",
+     "name": "string",
+     "note": "string"
+    }
+   ],
+   "exemptions": [
+    {
+     "kind": "string",
+     "note": "string",
+     "value": "string"
+    }
+   ],
+   "version": "number",
+   "vpn": [
+    {
+     "country": "string",
+     "provider": "string"
+    }
+   ],
+   "vpn_modes": {},
+   "watch": [
+    {
+     "ip": "string",
+     "note": "string"
+    }
+   ]
+  },
+  "/api/overview": {
+   "applied": {
+    "ban": "number",
+    "captcha": "number"
+   },
+   "asn_names": "number",
+   "attackers_recommended": "number",
+   "auth_mode": "string",
+   "broad_proxies": [],
+   "crowdsec_mode": "string",
+   "interval_hours": "number",
+   "last_apply": {
+    "finished_at": "number",
+    "id": "number",
+    "started_at": "number",
+    "status": "string",
+    "summary": {
+     "ban": "number",
+     "ban_active": "number",
+     "ban_added": "number",
+     "ban_refreshed": "number",
+     "ban_removed": "number",
+     "captcha": "number",
+     "captcha_active": "number",
+     "captcha_added": "number",
+     "captcha_refreshed": "number",
+     "captcha_removed": "number",
+     "watch_hits": []
+    },
+    "triggered_by": "string"
+   },
+   "me": "null",
+   "next_run": "number",
+   "pending": "bool",
+   "rev": "number",
+   "rules": {
+    "asns": "number",
+    "exemptions": "number",
+    "vpn": "number",
+    "watch": "number"
+   },
+   "running": "bool",
+   "untrusted_proxy": "null",
+   "user": "string"
+  },
+  "/api/preview": {
+   "ban": {
+    "add": "number",
+    "remove": "number",
+    "total": "number"
+   },
+   "captcha": {
+    "add": "number",
+    "remove": "number",
+    "total": "number"
+   },
+   "rev": "number"
+  },
+  "/api/protect": {
+   "client_ip": "null",
+   "protected": [
+    {
+     "created": "number",
+     "kind": "string",
+     "mode": "string",
+     "name": "string",
+     "note": "string",
+     "value": "string"
+    }
+   ],
+   "sessions": [],
+   "utmp": "string"
+  },
+  "/api/runs": [
+   {
+    "finished_at": "number",
+    "id": "number",
+    "kind": "string",
+    "started_at": "number",
+    "status": "string",
+    "summary": {
+     "ban": "number",
+     "ban_active": "number",
+     "ban_added": "number",
+     "ban_refreshed": "number",
+     "ban_removed": "number",
+     "captcha": "number",
+     "captcha_active": "number",
+     "captcha_added": "number",
+     "captcha_refreshed": "number",
+     "captcha_removed": "number",
+     "watch_hits": []
+    },
+    "triggered_by": "string"
+   }
+  ],
+  "/api/runs/1": {
+   "changes": [
+    {
+     "op": "string",
+     "type": "string",
+     "value": "string"
+    }
+   ],
+   "finished_at": "number",
+   "id": "number",
+   "kind": "string",
+   "log": "string",
+   "started_at": "number",
+   "status": "string",
+   "summary": {
+    "ban": "number",
+    "ban_active": "number",
+    "ban_added": "number",
+    "ban_refreshed": "number",
+    "ban_removed": "number",
+    "captcha": "number",
+    "captcha_active": "number",
+    "captcha_added": "number",
+    "captcha_refreshed": "number",
+    "captcha_removed": "number",
+    "watch_hits": []
+   },
+   "triggered_by": "string"
+  },
+  "/api/session": {
+   "auth_mode": "string",
+   "crowdsec_configured": "bool",
+   "denied": "null",
+   "peer_ip": "null",
+   "peer_name": "null",
+   "setup_required": "bool",
+   "user": "string",
+   "version": "string"
+  },
+  "/api/settings": {
+   "auth_mode": "string",
+   "auth_user_header": "string",
+   "crowdsec_mode": "string",
+   "decision_hours": "number",
+   "docker_container": "string",
+   "include_ipv6": "bool",
+   "interval_hours": "number",
+   "lapi_machine_id": "string",
+   "lapi_password_set": "bool",
+   "lapi_url": "string",
+   "local_user": "string",
+   "notify_format": "string",
+   "notify_token_set": "bool",
+   "notify_url": "string",
+   "sanity_percent": "number",
+   "spamhaus_asndrop": "null",
+   "trusted_proxies": []
+  },
+  "/api/vpn/nordvpn/countries": [
+   {
+    "code": "string",
+    "continent": "string",
+    "name": "string",
+    "servers": "number"
+   }
+  ],
+  "/api/vpn/providers": [
+   {
+    "countries": [
+     null
+    ],
+    "exit_asn": "null|number",
+    "id": "string",
+    "mode": "string",
+    "name": "string",
+    "note": "string"
+   }
+  ],
+  "/api/watch": [
+   {
+    "ip": "string",
+    "last_status": "string",
+    "note": "string"
+   }
+  ]
+ }
+}

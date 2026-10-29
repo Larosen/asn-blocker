@@ -1,0 +1,11 @@
+{
+  "name": "asn-blocker-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests of the web UI: accessibility (axe), layout and key flows against an offline demo server",
+  "scripts": { "test": "node --test --test-concurrency=1 *.test.mjs" },
+  "devDependencies": {
+    "axe-core": "4.10.2",
+    "playwright": "1.56.1"
+  }
+}
