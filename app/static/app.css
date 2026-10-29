@@ -203,6 +203,8 @@ tr:last-child td { border-bottom: 0; }
 tbody tr { transition: background-color var(--d-fast); }
 tbody tr:hover td { background: var(--bg-2); }
 td.actions { text-align: right; white-space: nowrap; width: 1%; }
+tr.wins td { background: var(--bg-2); }
+tr.wins td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 td input.inline { border-color: transparent; background: transparent; width: 100%; min-width: 120px; }
 td input.inline:hover, td input.inline:focus { border-color: var(--line-strong); background: var(--bg-0); }
 td select.inline { border-color: transparent; background-color: transparent; min-width: 110px; }

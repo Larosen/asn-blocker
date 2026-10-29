@@ -64,10 +64,44 @@ def _m3_rule_lifetime(c):
         c.execute("ALTER TABLE asn_rules ADD COLUMN expires_at REAL")
 
 
+def _m4_policies(c):
+    """One table for every rule: ASN rules, exemptions, VPN exemptions, self-protection and Spamhaus ASN-DROP."""
+    c.execute("""CREATE TABLE policies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL CHECK (source IN ('asn','cidr','ip','vpn','list')),
+      value TEXT NOT NULL,
+      effect TEXT NOT NULL CHECK (effect IN ('ban','captcha','cap','allow')),
+      locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
+      name TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT 'manual',
+      created REAL NOT NULL DEFAULT 0, updated REAL NOT NULL DEFAULT 0, expires_at REAL)""")
+    c.execute("CREATE UNIQUE INDEX policies_one_per_kind ON policies(source, value, locked, "
+              "CASE WHEN effect IN ('ban','captcha') THEN 'block' ELSE effect END)")
+    c.execute("CREATE INDEX policies_effect ON policies(effect, source)")
+    ins = ("INSERT OR IGNORE INTO policies(source, value, effect, locked, name, note, origin, created, updated, expires_at) "
+           "VALUES(?,?,?,?,?,?,?,?,?,?)")
+    for r in c.execute("SELECT * FROM asn_rules").fetchall():
+        c.execute(ins, ("asn", str(r["asn"]), r["action"], 0, r["name"], r["note"], r["source"], r["updated_at"],
+                        r["updated_at"], r["expires_at"]))
+    for r in c.execute("SELECT * FROM exemptions").fetchall():
+        c.execute(ins, (r["kind"], r["value"], "allow", 0, "", r["note"], "manual", 0, 0, None))
+    for r in c.execute("SELECT * FROM vpn_rules").fetchall():
+        c.execute(ins, ("vpn", f"{r['provider']}:{r['country']}", "allow", 0, "", "", "manual", 0, 0, None))
+    for r in c.execute("SELECT * FROM protected").fetchall():
+        effect = "cap" if r["kind"] == "asn" and r["mode"] == "captcha" else "allow"
+        c.execute(ins, (r["kind"], r["value"], effect, 1, "", r["note"], "manual", r["created"], r["created"], None))
+    row = c.execute("SELECT value FROM settings WHERE key='spamhaus_asndrop'").fetchone()
+    if row and json.loads(row["value"]) in ("ban", "captcha"):
+        c.execute(ins, ("list", "spamhaus-asndrop", json.loads(row["value"]), 0, "Spamhaus ASN-DROP", "", "manual", 0, 0, None))
+    c.execute("DELETE FROM settings WHERE key='spamhaus_asndrop'")
+    for t in ("asn_rules", "exemptions", "vpn_rules", "protected"):
+        c.execute(f"DROP TABLE {t}")
+
+
 MIGRATIONS = [  # (version, description, SQL script or function(connection))
     (1, "base schema", BASE_SCHEMA),
     (2, "self-protection mode per ASN", _m2_protection_mode),
     (3, "lifetime of ASN rules", _m3_rule_lifetime),
+    (4, "all rules in one policy table", _m4_policies),
 ]
 
 
@@ -77,6 +111,11 @@ def schema_version(c=None):
 
 def migrate():
     c = conn()
+    pending = [m for m in MIGRATIONS if m[0] > schema_version(c)]
+    if pending and schema_version(c) > 0:  # a copy of the database as it was, in case the update has to be undone
+        backup = DB_FILE.with_name(f"{DB_FILE.name}.before-v{pending[-1][0]}")
+        backup.unlink(missing_ok=True)
+        c.execute("VACUUM INTO ?", (str(backup),))
     for version, _, step in MIGRATIONS:
         if version <= schema_version(c):
             continue
@@ -188,7 +227,6 @@ DEFAULTS = {
     "notify_format": "ntfy",         # 'ntfy' | 'gotify' | 'webhook'
     "notify_token": "",              # optional access token, sent as header (never returned to the browser)
     "public_url": None,              # address of the web UI, for links in notifications
-    "spamhaus_asndrop": None,        # None = off, otherwise 'ban' | 'captcha'
     "config_rev": 0,
     "applied_rev": 0,
     "attackers_last_id": 0,          # newest CrowdSec alert already counted
@@ -251,17 +289,15 @@ def _migrate_prototype():
         cfg = json.loads(old.read_text())
     except ValueError:
         return
-    now = time.time()
+    from .store import policies  # the prototype's lists become policies
+
+    rows = [{"source": "asn", "value": a["asn"], "effect": a["action"], "name": a.get("name", ""), "note": a.get("note", ""),
+             "origin": "import"} for a in cfg.get("asns", [])]
+    rows += [{"source": "vpn", "value": f"{v['provider']}:{v['country']}", "effect": "allow"} for v in cfg.get("vpn_whitelist", [])]
+    rows += [{"source": "asn", "value": a, "effect": "allow"} for a in cfg.get("exempt_asns", [])]
+    rows += [{"source": "cidr", "value": n, "effect": "allow"} for n in cfg.get("manual_exempt", [])]
     with tx() as c:
-        for a in cfg.get("asns", []):
-            c.execute("INSERT OR IGNORE INTO asn_rules(asn,name,action,note,updated_at) VALUES(?,?,?,?,?)",
-                      (a["asn"], a.get("name", ""), a["action"], a.get("note", ""), now))
-        for v in cfg.get("vpn_whitelist", []):
-            c.execute("INSERT OR IGNORE INTO vpn_rules VALUES(?,?)", (v["provider"], v["country"]))
-        for asn in cfg.get("exempt_asns", []):
-            c.execute("INSERT OR IGNORE INTO exemptions(kind,value) VALUES('asn',?)", (str(asn),))
-        for cidr in cfg.get("manual_exempt", []):
-            c.execute("INSERT OR IGNORE INTO exemptions(kind,value) VALUES('cidr',?)", (cidr,))
+        policies.upsert(rows, c)
         put("include_ipv6", bool(cfg.get("include_ipv6")), c)
         if cfg.get("widen_vpn_ips"):
             put("vpn_modes", {p: "net" for p in ("nordvpn", "mullvad", "surfshark")}, c)

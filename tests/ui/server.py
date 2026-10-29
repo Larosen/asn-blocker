@@ -19,6 +19,7 @@ if __name__ == "__main__":
     os.environ["DATA_DIR"] = sys.argv[1]
 
 from app import crowdsec, db, engine, routing, sources  # noqa: E402
+from app.store import policies  # noqa: E402
 from tests.conftest import FakeBackend  # noqa: E402
 
 PASSWORD = "correct-horse-battery"
@@ -94,13 +95,14 @@ def seed():
         c.executemany("INSERT INTO asn_names VALUES(?,?,?,?)", [(a, *v) for a, v in NAMES.items()])
         rules = [(64500, "ban", "scrapers", None), (64501, "ban", "", None), (64502, "captcha", "", now + 30 * 86400),
                  (64503, "captcha", "transit", None), (64506, "ban", "attacking network", now + 90 * 86400)]
-        c.executemany("INSERT INTO asn_rules(asn,name,action,note,updated_at,expires_at) VALUES(?,?,?,?,?,?)",
-                      [(a, NAMES[a][0], act, note, now, exp) for a, act, note, exp in rules])
-        c.executemany("INSERT INTO exemptions VALUES(?,?,?)", [("cidr", "203.0.113.0/28", "partner"), ("asn", "64509", "CDN")])
-        c.executemany("INSERT INTO vpn_rules VALUES(?,?)", [("nordvpn", "SE"), ("nordvpn", "DE"), ("mullvad", "NL")])
+        policies.upsert([{"source": "asn", "value": a, "effect": act, "name": NAMES[a][0], "note": note, "expires_at": exp}
+                         for a, act, note, exp in rules]
+                        + [{"source": "cidr", "value": "203.0.113.0/28", "effect": "allow", "note": "partner"},
+                           {"source": "asn", "value": 64509, "effect": "allow", "note": "CDN"}]
+                        + [{"source": "vpn", "value": v, "effect": "allow"} for v in ("nordvpn:SE", "nordvpn:DE", "mullvad:NL")]
+                        + [{"source": "ip", "value": "198.51.100.42", "effect": "allow", "locked": True, "note": "home"},
+                           {"source": "asn", "value": 64504, "effect": "cap", "locked": True, "note": "home ISP"}], c, now)
         c.execute("INSERT INTO watch_ips(ip,note,last_status) VALUES('203.0.113.7','monitoring','clear')")
-        c.executemany("INSERT INTO protected(kind,value,note,created,mode) VALUES(?,?,?,?,?)",
-                      [("ip", "198.51.100.42", "home", now, "exempt"), ("asn", "64504", "home ISP", now, "captcha")])
         for d in range(20):
             day = time.strftime("%Y-%m-%d", time.gmtime(now - d * 86400))
             for i in range(1 + d % 4):
@@ -113,9 +115,8 @@ def seed():
         db.put("attackers_updated", now, c)
         db.bump_rev(c)
     engine.run("apply", "setup")  # a real run against the in-memory CrowdSec: ranges, history, map
-    with db.tx() as c:
-        c.execute("UPDATE asn_rules SET note='edited after the run' WHERE asn=64501")
-        db.bump_rev(c)  # leaves "not applied" changes for the apply bar
+    policies.upsert([{"source": "asn", "value": 64501, "effect": "ban", "name": NAMES[64501][0],
+                      "note": "edited after the run"}])  # leaves "not applied" changes for the apply bar
 
 
 if __name__ == "__main__":

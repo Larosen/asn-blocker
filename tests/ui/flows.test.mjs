@@ -80,3 +80,17 @@ test("settings: routing table status and loading it on demand", async () => {
   assert.deepEqual(p.errors, []);
   await p.context().close();
 });
+
+test("IP check explains which rule decides", async () => {
+  const p = await h.page();
+  await open(p, h.base, "overview");
+  const banned = (await (await p.request.get(h.base + "/api/ranges/ban.txt")).text()).split("\n")[0];  // e.g. 11.12.0.0/16
+  await p.fill("#ipcheck input", banned.split("/")[0].replace(/\.0$/, ".1"));
+  await p.keyboard.press("Enter");
+  await p.waitForSelector("#dlg[open]");
+  const why = await p.textContent("#dlg");
+  assert.match(why, /Why/);
+  assert.equal(await p.locator("#dlg tr.wins").count(), 1);
+  assert.deepEqual(p.errors, []);
+  await p.context().close();
+});

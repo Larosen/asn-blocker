@@ -3,15 +3,14 @@ import time
 from fastapi.testclient import TestClient
 
 from app import attackers, db, engine, main, notify
+from app.store import rules
 from tests.conftest import FakeBackend
 from tests.test_api import H, setup_local
 from tests.test_attackers import alert, names
 
 
 def rule(asn, expires_at=None, action="ban"):
-    with db.tx() as c:
-        c.execute("INSERT INTO asn_rules(asn,name,action,updated_at,expires_at) VALUES(?,?,?,?,?)",
-                  (asn, f"AS{asn}", action, time.time(), expires_at))
+    rules.upsert([{"asn": asn, "name": f"AS{asn}", "action": action, "expires_at": expires_at}])
 
 
 def test_expired_rules_no_longer_count_and_are_removed():
@@ -22,7 +21,7 @@ def test_expired_rules_no_longer_count_and_are_removed():
     rev = db.get("config_rev")
     assert engine.expire_rules() == [3]
     assert db.get("config_rev") == rev + 1
-    assert [r["asn"] for r in db.q("SELECT asn FROM asn_rules ORDER BY asn")] == [1, 2]
+    assert sorted(rules.asns()) == [1, 2]
     assert db.q1("SELECT action FROM audit_log ORDER BY id DESC LIMIT 1")["action"] == "asn.expired"
     assert engine.expire_rules() == []
 
@@ -36,11 +35,11 @@ def test_api_keeps_and_exports_the_lifetime(monkeypatch):
         assert client.get("/api/asns").json()[0]["expires_at"] == until
         # switching the action from the UI sends the lifetime along
         client.put("/api/asns", headers=H, json=[{"asn": 64500, "action": "captcha", "expires_at": until}])
-        assert db.q1("SELECT action, expires_at FROM asn_rules")["expires_at"] == until
+        assert rules.listing()[0]["expires_at"] == until
         assert client.get("/api/export").json()["asns"][0]["expires_at"] == until
         # without a lifetime the rule is permanent
         client.put("/api/asns", headers=H, json=[{"asn": 64500, "action": "captcha"}])
-        assert db.q1("SELECT expires_at FROM asn_rules")["expires_at"] is None
+        assert rules.listing()[0]["expires_at"] is None
         assert client.put("/api/asns", headers=H, json=[{"asn": 64500, "action": "ban", "expires_at": -5}]).status_code == 422
 
 

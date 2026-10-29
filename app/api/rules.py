@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from .. import auth, db, routing, sources, suggestions
-from ..store import protection
+from ..store import lists, protection
 from ..store import rules as store
 from .deps import require_user, src_call
 
@@ -108,7 +108,7 @@ def rows(rules):
 @router.get("/asns/suggestions")
 def asn_suggestions():
     existing, protected = store.asns(), protection.asns()
-    return {"spamhaus": db.get("spamhaus_asndrop"), "lists": [
+    return {"spamhaus": lists.spamhaus(), "lists": [
         {k: v for k, v in lst.items() if k != "asns"}
         | {"asns": [{"asn": a, "name": sources.asn_name(a) or label, "note": label, "present": a in existing,
                      "protected": a in protected} for a, label in lst["asns"]]}

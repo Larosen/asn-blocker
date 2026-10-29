@@ -2,6 +2,7 @@ import time
 from datetime import datetime, timezone
 
 from app import attackers, db, sources
+from app.store import exemptions, rules
 from tests.conftest import FakeBackend
 
 NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -64,9 +65,8 @@ def test_recommendations(monkeypatch):
         for k in range(n):
             i += 1
             be.alert_list.append(alert(i, f"{100 + asn % 50}.{k}.0.1", asn=str(asn)))
-    with db.tx() as c:
-        c.execute("INSERT INTO asn_rules(asn,name,action,updated_at) VALUES(51167,'CONTABO','ban',0)")
-        c.execute("INSERT INTO exemptions(kind,value) VALUES('asn','12876')")
+    rules.upsert([{"asn": 51167, "name": "CONTABO", "action": "ban"}])
+    exemptions.add([("asn", "12876", "")])
     attackers.collect(be)
     rep = attackers.report(7)
     rec = {r["asn"]: r["recommendation"] for r in rep["rows"]}

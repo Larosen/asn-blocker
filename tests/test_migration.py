@@ -1,6 +1,7 @@
 import json
 
 from app import db
+from app.store import exemptions, rules, vpn
 
 
 def test_prototype_config_is_imported(tmp_path):
@@ -9,8 +10,9 @@ def test_prototype_config_is_imported(tmp_path):
         "vpn_whitelist": [{"provider": "nordvpn", "country": "DE"}],
         "exempt_asns": [207137], "manual_exempt": ["198.51.100.7"], "widen_vpn_ips": True, "include_ipv6": False}))
     db._migrate_prototype()
-    assert db.q1("SELECT action FROM asn_rules WHERE asn=24940")["action"] == "ban"
-    assert db.q("SELECT kind, value FROM exemptions ORDER BY kind") == [{"kind": "asn", "value": "207137"}, {"kind": "cidr", "value": "198.51.100.7"}]
+    assert rules.actions() == {24940: "ban"}
+    assert [(e["kind"], e["value"]) for e in exemptions.listing()] == [("asn", "207137"), ("cidr", "198.51.100.7")]
+    assert vpn.selections() == {"nordvpn": ["DE"]}
     assert db.get("vpn_modes")["nordvpn"] == "net"
     db._migrate_prototype()  # idempotent
-    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 1
+    assert rules.count() == 1

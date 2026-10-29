@@ -411,6 +411,28 @@ function route() {
 }
 
 // --- IP checker ----------------------------------------------------------------------------------------
+// Why an IP gets what it gets: every rule that covers it, the one that decides, and whether that is applied yet
+const effectName = (e) => ({ ban: t("Block"), captcha: t("Captcha"), cap: t("At most captcha"), allow: t("Never blocked") }[e] ?? esc(e));
+const effectTag = (e) => `<span class="tag ${e === "allow" ? "ok" : e === "cap" ? "captcha" : e}">${effectName(e)}</span>`;
+function policyLabel(m) {
+  const [provider, cc] = m.value.split(":");
+  const what = m.source === "asn" ? `AS${esc(m.value)}${m.name ? " " + esc(m.name) : ""}`
+    : m.source === "vpn" ? t("VPN {provider} {country}", { provider: esc(provider), country: esc(cc) })
+    : m.source === "list" ? esc(m.name || m.value) : `<span class="mono">${esc(m.value)}</span>`;
+  return what + (m.locked ? ` <span class="muted small">· ${t("self-protection")}</span>` : "") + (m.note ? ` <span class="muted small">· ${esc(m.note)}</span>` : "");
+}
+function explainHtml(e, applied) {
+  const outcome = e.decision === "allow" ? null : e.decision;
+  const rows = e.implicit.map((x) => `<tr><td>${effectTag("allow")}</td><td>${esc(t(x))}</td><td></td></tr>`)
+    .concat(e.matches.map((m) => `<tr${m.wins ? ` class="wins"` : ""}><td>${effectTag(m.effect)}</td><td>${policyLabel(m)}<div class="small muted mono">${esc(m.via)}</div></td>
+      <td class="small">${m.wins ? `<b>${t("decides")}</b>` : ""}</td></tr>`));
+  return `<h3>${t("Why")}</h3>
+    ${rows.length ? `<div class="table-wrap"><table><tbody>${rows.join("")}</tbody></table></div>` : `<p class="small muted">${t("No rule covers this address.")}</p>`}
+    ${e.capped ? `<p class="small">${t("Its network is protected against bans, so the block becomes a captcha.")}</p>` : ""}
+    ${(outcome ?? null) !== (applied ?? null) ? `<div class="note warn small">${t("With the current rules: {result} – not applied yet.", { result: outcome ? `<b>${act(outcome)}</b>` : `<b>${t("not blocked")}</b>` })}</div>` : ""}
+    ${e.problems.length ? `<p class="small muted">${e.problems.map(esc).join(" · ")}</p>` : ""}`;
+}
+
 const checkIp = guard(async (ip) => {
   const r = await api("/check/" + encodeURIComponent(ip));
   const st = r.status ? `<span class="tag ${r.status}">${act(r.status)}</span>` : r.exempt.length ? `<span class="tag ok">${t("Exempt")}</span>` : `<span class="tag">${t("not affected")}</span>`;
@@ -423,7 +445,8 @@ const checkIp = guard(async (ip) => {
     ${r.status && r.vpn_near?.length ? `<div class="note warn small">${t("Probably a VPN exit address: listed {servers} servers are in the same network, and VPN exits often use a neighbouring IP. Select this country for the provider and choose “whole network (/24, /64)”.", { servers: r.vpn_near.map((x) => esc(`${x.name} ${x.country}`)).join(", ") })}
       <a class="btn sm" data-close href="#/vpn/${esc(r.vpn_near[0].provider)}">${t("Open {name}", { name: esc(r.vpn_near[0].name) })}</a></div>` : ""}
     ${r.lookup_error ? `<p class="small muted">${esc(r.lookup_error)}</p>` : ""}
-    <p class="small muted">${t("As of the last applied run.")}</p>`;
+    <p class="small muted">${t("As of the last applied run.")}</p>
+    ${r.explain ? explainHtml(r.explain, r.status) : ""}`;
   const v = await dialog({ title: r.ip, body, actions: [["watch", t("Watch this IP")], ["exempt", t("As exemption")], ["cancel", t("Close"), "primary"]],
     onOpen: (d) => $$("[data-close]", d).forEach((a) => a.addEventListener("click", () => d.close("cancel"))) });
   if (v === "watch") { await api("/watch", { method: "POST", body: { ip: r.ip } }); toast(t("Watched IP added")); refreshOverview(); }

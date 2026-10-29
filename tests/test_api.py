@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import auth, db, main
+from app.store import exemptions
+from app.store import rules as rule_store
 
 H = {"X-Requested-With": "asn-blocker"}
 
@@ -324,15 +326,14 @@ def test_blocking_own_network_needs_confirmation(client, monkeypatch):
     assert r.status_code == 409
     d = r.json()["detail"]
     assert d["code"] == "own_asn" and d["asns"] == [3320] and d["ip"] == "84.150.3.10"
-    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 0            # nothing saved
+    assert rule_store.count() == 0            # nothing saved
     assert client.put("/api/asns", headers=hdr, json=rules[1:]).status_code == 200   # other networks: no question
     assert client.put("/api/asns?confirm_own=1", headers=hdr, json=rules).status_code == 200
-    assert {r["asn"] for r in db.q("SELECT asn FROM asn_rules")} == {3320, 14061}
+    assert rule_store.asns() == {3320, 14061}
     assert client.put("/api/asns", headers=hdr, json=[{"asn": 3320, "action": "captcha"}]).status_code == 200  # existing rule
     r = client.post("/api/import", headers=hdr, json={"version": 1, "asns": [{"asn": 3320, "action": "ban"}]})
     assert r.status_code == 200   # already present
-    with db.tx() as c:
-        c.execute("DELETE FROM asn_rules")
+    rule_store.delete(rule_store.asns())
     r = client.post("/api/import", headers=hdr, json={"version": 1, "asns": [{"asn": 3320, "action": "ban"}]})
     assert r.status_code == 409
 
@@ -340,8 +341,7 @@ def test_blocking_own_network_needs_confirmation(client, monkeypatch):
 def test_suggestions(client):
     from app import selfprotect, suggestions
     setup_local(client)
-    with db.tx() as c:
-        c.execute("INSERT INTO asn_rules(asn,name,action,updated_at) VALUES(14061,'DO','ban',0)")
+    rule_store.upsert([{"asn": 14061, "name": "DO", "action": "ban"}])
     selfprotect.add("asn", "24940", "test")
     sg = client.get("/api/asns/suggestions").json()
     assert [x["id"] for x in sg["lists"]] == [x["id"] for x in suggestions.LISTS]
@@ -461,11 +461,11 @@ def test_import_is_validated_before_writing(client):
            "exemptions": [{"kind": "cidr", "value": "203.0.113.0/24"}, {"kind": "cidr", "value": "0.0.0.0/0"}]}
     r = client.post("/api/import", headers=H, json=bad)
     assert r.status_code == 422 and "too large" in r.json()["detail"]
-    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 0 and db.q1("SELECT count(*) n FROM exemptions")["n"] == 0
+    assert rule_store.count() == 0 and exemptions.count() == 0
     assert client.post("/api/exemptions", headers=H, json={"kind": "cidr", "value": "::/0"}).status_code == 422
     good = {**bad, "exemptions": bad["exemptions"][:1], "watch": [{"ip": "198.51.100.1"}]}
     assert client.post("/api/import", headers=H, json=good).status_code == 200
-    assert db.q1("SELECT count(*) n FROM asn_rules")["n"] == 1 and db.q1("SELECT count(*) n FROM watch_ips")["n"] == 1
+    assert rule_store.count() == 1 and db.q1("SELECT count(*) n FROM watch_ips")["n"] == 1
 
 
 def test_search_rejects_odd_digits(client):

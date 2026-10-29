@@ -143,6 +143,29 @@
    "exempt": [
     "string"
    ],
+   "explain": {
+    "capped": "bool",
+    "decision": "string",
+    "implicit": [
+     "string"
+    ],
+    "matches": [
+     {
+      "effect": "string",
+      "expires_at": "null",
+      "id": "number",
+      "locked": "bool",
+      "name": "string",
+      "note": "string",
+      "origin": "string",
+      "source": "string",
+      "value": "string",
+      "via": "string",
+      "wins": "bool"
+     }
+    ],
+    "problems": []
+   },
    "global": "bool",
    "ip": "string",
    "ranges": {},
