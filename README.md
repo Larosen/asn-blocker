@@ -311,6 +311,19 @@ entirely by cybercriminals – can be included as an additional set of ASN rules
 The **Check IP** field at the top of every page shows, for any IP, its ASN and prefix, whether it is currently
 blocked, and which rule or exemption applies – with buttons to block its network or put it behind a captcha.
 
+Under **Why** it lists every rule that covers the address and marks the one that decides – also when that is not
+the IP's own network (e.g. a larger prefix of another ASN), a VPN exemption, self-protection or Spamhaus. If the
+current rules would treat the address differently from what is applied, it says so.
+
+### How rules work together
+
+All rules – ASN rules, exemptions, VPN exemptions, self-protection and Spamhaus ASN-DROP – are one kind of
+*policy*: a source of networks (an ASN, a network, a VPN provider's servers in a country, a list) and an effect.
+Where networks of several policies overlap, the stronger effect wins for each address:
+
+**never blocked** (exemptions, VPN, self-protection, private ranges, active SSH sessions) **› at most captcha**
+(networks protected against bans) **› block › captcha**
+
 ## Safeguards
 
 | | |

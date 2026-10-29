@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.8 (2026-10-29)
+- **One rule model**: ASN rules, exemptions, VPN exemptions, self-protection and Spamhaus ASN-DROP are stored as
+  *policies* in one table (source × effect × lifetime, optionally locked for self-protection). One evaluator applies
+  them with a fixed precedence per address: never blocked › at most captcha › block › captcha. The result of a run
+  is unchanged; the UI and API behave as before
+- **Check IP → Why**: every rule that covers the address, the one that decides, and whether the current rules differ
+  from what is applied
+- Existing databases are converted automatically. Before any database upgrade, a copy of the database is kept next
+  to it (`asn-blocker.db.before-v4`); to go back to 0.7.7 or older, stop the container, replace the database with
+  that copy and start the older image
+
 ## 0.7.7 (2026-10-29)
 - **Local routing table**: the prefixes of every network come from a copy of the global routing table (bgp.tools,
   ~1.5 million prefixes), loaded once a day into its own file `routes.db` (~75 MB) and swapped in atomically.

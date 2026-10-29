@@ -7,13 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from .. import auth, crowdsec, db, engine, notify, routing
+from ..store import lists
 from .deps import require_user
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
 
 
 PUBLIC_SETTINGS = ["interval_hours", "decision_hours", "include_ipv6", "sanity_percent", "notify_url",
-                   "notify_format", "spamhaus_asndrop", "trusted_proxies", "auth_user_header", "auth_mode",
+                   "notify_format", "trusted_proxies", "auth_user_header", "auth_mode",
                    "crowdsec_mode", "lapi_url", "lapi_machine_id", "docker_container", "local_user"]
 
 
@@ -22,7 +23,7 @@ def get_settings():
     return {k: db.get(k) for k in PUBLIC_SETTINGS} | {"lapi_password_set": bool(db.get("lapi_password")),
                                                       "notify_url": notify.mask(db.get("notify_url")),
                                                       "notify_token_set": bool(db.get("notify_token")),
-                                                      "routing": routing.status()}
+                                                      "routing": routing.status(), "spamhaus_asndrop": lists.spamhaus()}
 
 
 class Settings(BaseModel):
@@ -52,13 +53,13 @@ def put_settings(s: Settings, request: Request, user: str = Depends(require_user
     if db.get("auth_mode") == "proxy":
         if not auth.ip_in(auth.peer_ip(request), s.trusted_proxies) or not request.headers.get(s.auth_user_header):
             raise HTTPException(422, "These proxy settings would lock you out")
-    affects = {k: db.get(k) for k in ("include_ipv6", "spamhaus_asndrop")} != \
-        {"include_ipv6": s.include_ipv6, "spamhaus_asndrop": s.spamhaus_asndrop}
     with db.tx() as c:
-        for k, v in s.model_dump().items():
-            db.put(k, v, c)
-        if affects:
+        if db.get("include_ipv6") != s.include_ipv6:
             db.bump_rev(c)
+        if lists.spamhaus() != s.spamhaus_asndrop:
+            lists.set_spamhaus(s.spamhaus_asndrop, c)  # a policy like every other rule
+        for k, v in s.model_dump(exclude={"spamhaus_asndrop"}).items():
+            db.put(k, v, c)
     db.audit(user, "settings.put", s.model_dump())
     return {"ok": True}
 

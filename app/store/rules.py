@@ -1,74 +1,69 @@
-"""ASN rules: Block or Captcha per ASN, optionally with a lifetime."""
+"""ASN rules: Block or Captcha per ASN, optionally with a lifetime – the block policies of source 'asn'."""
 import time
 
-from .. import db
+from .. import sources
+from . import policies
 
-COLUMNS = ("asn", "name", "action", "note", "expires_at")
+BLOCK = ("ban", "captcha")
+
+
+def _rule(p):
+    return {"asn": int(p["value"]), "name": p["name"], "action": p["effect"], "note": p["note"], "source": p["origin"],
+            "updated_at": p["updated"], "expires_at": p["expires_at"]}
 
 
 def listing():
     """All rules with the ASN's type and country, for the rules table."""
-    return db.q("SELECT a.*, n.class, n.cc FROM asn_rules a LEFT JOIN asn_names n USING(asn) ORDER BY a.asn")
+    out = []
+    for p in sorted(policies.listing("asn", effects=BLOCK, locked=False), key=lambda p: int(p["value"])):
+        info = sources.asn_info(int(p["value"]))
+        out.append(_rule(p) | {"class": info["class"] or None, "cc": info["cc"] or None})
+    return out
 
 
 def active(now=None):
     """{asn: rule} – an expired rule no longer counts, even before expire() has removed it."""
     now = time.time() if now is None else now
-    return {r["asn"]: r for r in db.q("SELECT * FROM asn_rules WHERE expires_at IS NULL OR expires_at > ?", (now,))}
+    return {r["asn"]: r for r in map(_rule, policies.listing("asn", effects=BLOCK, locked=False))
+            if r["expires_at"] is None or r["expires_at"] > now}
 
 
 def actions():
-    return {r["asn"]: r["action"] for r in db.q("SELECT asn, action FROM asn_rules")}
+    return {int(p["value"]): p["effect"] for p in policies.listing("asn", effects=BLOCK, locked=False)}
 
 
 def asns():
-    return {r["asn"] for r in db.q("SELECT asn FROM asn_rules")}
+    return set(actions())
 
 
 def count():
-    return db.q1("SELECT count(*) n FROM asn_rules")["n"]
+    return policies.count("asn", effects=BLOCK, locked=False)
 
 
 def upsert(rules, now=None, c=None):
     """rules: dicts with asn, name, action, note, expires_at (None = permanent). Replaces existing rules of these ASNs."""
-    now = time.time() if now is None else now
-    with db.tx_or(c) as c:
-        c.executemany("INSERT INTO asn_rules(asn,name,action,note,updated_at,expires_at) VALUES(?,?,?,?,?,?) "
-                      "ON CONFLICT(asn) DO UPDATE SET name=excluded.name, action=excluded.action, note=excluded.note, "
-                      "updated_at=excluded.updated_at, expires_at=excluded.expires_at",
-                      [(r["asn"], r.get("name") or "", r["action"], r.get("note") or "", now, r.get("expires_at")) for r in rules])
-        db.bump_rev(c)
+    policies.upsert([{"source": "asn", "value": r["asn"], "effect": r["action"], "name": r.get("name"), "note": r.get("note"),
+                      "origin": r.get("source") or "manual", "expires_at": r.get("expires_at")} for r in rules], c, now)
 
 
 def delete(asns):
-    with db.tx() as c:
-        n = sum(c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount for a in asns)
-        db.bump_rev(c)
-    return n
+    return sum(policies.delete("asn", a, BLOCK, locked=False) for a in asns)
 
 
 def expire(now=None):
-    """Removes rules whose time is up. Returns them (asn, name, action)."""
-    now = time.time() if now is None else now
-    with db.tx() as c:
-        gone = [dict(r) for r in c.execute("SELECT asn, name, action FROM asn_rules WHERE expires_at <= ?", (now,))]
-        if gone:
-            c.executemany("DELETE FROM asn_rules WHERE asn=?", [(r["asn"],) for r in gone])
-            db.bump_rev(c)
-    return gone
+    """Removes rules (and any other policy) whose time is up. Returns the removed ASN rules (asn, name, action)."""
+    return [{"asn": int(p["value"]), "name": p["name"], "action": p["effect"]} for p in policies.expire(now)
+            if p["source"] == "asn" and p["effect"] in BLOCK]
 
 
 def apply_protection(asns, mode):
     """'exempt' (never blocked) removes the rules of these ASNs, 'captcha' (at most captcha) turns Block into Captcha.
     Returns the ASNs whose rule changed."""
-    with db.tx() as c:
-        if mode == "exempt":
-            changed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
-        else:
-            changed = [a for a in asns if c.execute("UPDATE asn_rules SET action='captcha' WHERE asn=? AND action='ban'", (a,)).rowcount]
-        db.bump_rev(c)
-    return changed
+    if mode == "exempt":
+        return [a for a in asns if policies.delete("asn", a, BLOCK, locked=False)]
+    return [a for a in asns if policies.set_effect("asn", a, ("ban",), "captcha", locked=False)]
 
 
 def export():
-    return db.q("SELECT asn,name,action,note,expires_at FROM asn_rules ORDER BY asn")
+    rules = map(_rule, policies.listing("asn", effects=BLOCK, locked=False))
+    return sorted(({k: r[k] for k in ("asn", "name", "action", "note", "expires_at")} for r in rules), key=lambda r: r["asn"])

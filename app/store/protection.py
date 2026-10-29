@@ -1,45 +1,45 @@
 """Self-protection: IPs that are never blocked, and ASNs that are never blocked ('exempt') or at most get a
-captcha ('captcha')."""
-import time
-
-from .. import db
+captcha ('captcha') – the locked policies."""
+from . import policies
 
 ASN_MODES = ("exempt", "captcha")  # never blocked | at most behind a captcha (never banned)
+_EFFECT = {"exempt": "allow", "captcha": "cap"}
 
 
 def listing():
-    return db.q("SELECT kind, value, note, created, mode FROM protected ORDER BY kind, value")
+    return [{"kind": p["source"], "value": p["value"], "note": p["note"], "created": p["created"],
+             "mode": "captcha" if p["effect"] == "cap" else "exempt"}
+            for k in ("asn", "ip") for p in policies.listing(k, locked=True)]
 
 
 def ips():
     """[(ip, note)]"""
-    return [(r["value"], r["note"]) for r in db.q("SELECT value, note FROM protected WHERE kind='ip'")]
+    return [(p["value"], p["note"]) for p in policies.listing("ip", effects=("allow",), locked=True)]
 
 
 def asns(mode=None):
     """Protected ASNs, optionally only those with the given mode."""
-    rows = db.q("SELECT value, mode FROM protected WHERE kind='asn'")
-    return {int(r["value"]) for r in rows if mode is None or r["mode"] == mode}
+    effects = (_EFFECT[mode],) if mode else ("allow", "cap")
+    return {int(p["value"]) for p in policies.listing("asn", effects=effects, locked=True)}
 
 
 def add(kind, value, note="", mode="exempt"):
-    with db.tx() as c:
-        c.execute("INSERT OR REPLACE INTO protected(kind,value,note,created,mode) VALUES(?,?,?,?,?)",
-                  (kind, value, note, time.time(), mode if kind == "asn" else "exempt"))
-        db.bump_rev(c)
+    effect = _EFFECT[mode] if kind == "asn" else "allow"
+    policies.delete(kind, value, locked=True)  # one protection per IP or ASN, whichever mode
+    policies.upsert([{"source": kind, "value": value, "effect": effect, "locked": True, "note": note}])
 
 
 def set_mode(asn, mode):
     if mode not in ASN_MODES:
         raise ValueError(mode)
-    with db.tx() as c:
-        n = c.execute("UPDATE protected SET mode=? WHERE kind='asn' AND value=?", (mode, str(asn))).rowcount
-        if n:
-            db.bump_rev(c)
-    return bool(n)
+    current = policies.listing("asn", str(asn), locked=True)
+    if not current:
+        return False
+    if current[0]["effect"] != _EFFECT[mode]:
+        policies.delete("asn", str(asn), locked=True)
+        policies.upsert([{"source": "asn", "value": str(asn), "effect": _EFFECT[mode], "locked": True, "note": current[0]["note"]}])
+    return True
 
 
 def delete(kind, value):
-    with db.tx() as c:
-        c.execute("DELETE FROM protected WHERE kind=? AND value=?", (kind, value))
-        db.bump_rev(c)
+    policies.delete(kind, value, locked=True)

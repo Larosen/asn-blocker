@@ -1,15 +1,18 @@
-"""VPN exemptions: the selected countries per provider, and whether exact server IPs or their /24 (/64) are exempt."""
+"""VPN exemptions: the selected countries per provider (allow policies of source 'vpn', value 'provider:CC'), and
+whether exact server IPs or their /24 (/64) are exempt (a setting per provider)."""
 from collections import defaultdict
 
 from .. import db
+from . import policies
 
 
 def selections():
     """{provider: [country codes]}"""
     out = defaultdict(list)
-    for r in db.q("SELECT provider, country FROM vpn_rules ORDER BY provider, country"):
-        out[r["provider"]].append(r["country"])
-    return dict(out)
+    for p in policies.listing("vpn", effects=("allow",)):
+        provider, _, cc = p["value"].partition(":")
+        out[provider].append(cc)
+    return {k: sorted(v) for k, v in sorted(out.items())}
 
 
 def modes():
@@ -17,13 +20,15 @@ def modes():
 
 
 def count():
-    return db.q1("SELECT count(*) n FROM vpn_rules")["n"]
+    return policies.count("vpn", ("allow",))
 
 
 def select(provider, countries, mode):
     with db.tx() as c:
-        c.execute("DELETE FROM vpn_rules WHERE provider=?", (provider,))
-        c.executemany("INSERT INTO vpn_rules VALUES(?,?)", [(provider, cc) for cc in countries])
+        for cc in set(selections().get(provider, [])) - set(countries):
+            policies.delete("vpn", f"{provider}:{cc}", ("allow",), c=c)
+        policies.upsert([{"source": "vpn", "value": f"{provider}:{cc}", "effect": "allow"} for cc in countries
+                         if cc not in selections().get(provider, [])], c)
         db.put("vpn_modes", modes() | {provider: mode}, c)
         db.bump_rev(c)
 
@@ -31,11 +36,12 @@ def select(provider, countries, mode):
 def add(pairs, provider_modes=None, c=None):
     """Import: adds (provider, country) pairs; provider_modes replaces the modes if given."""
     with db.tx_or(c) as c:
-        c.executemany("INSERT OR IGNORE INTO vpn_rules VALUES(?,?)", pairs)
+        have = {(p, cc) for p, ccs in selections().items() for cc in ccs}
+        policies.upsert([{"source": "vpn", "value": f"{p}:{cc}", "effect": "allow"} for p, cc in pairs if (p, cc) not in have], c)
         if provider_modes is not None:
             db.put("vpn_modes", provider_modes, c)
         db.bump_rev(c)
 
 
 def export():
-    return db.q("SELECT provider,country FROM vpn_rules")
+    return [{"provider": p, "country": cc} for p, ccs in selections().items() for cc in ccs]

@@ -4,6 +4,7 @@ import time
 import pytest
 
 from app import crowdsec, db, engine, sources
+from app.store import exemptions, rules, vpn
 from tests.conftest import FakeBackend
 
 PREFIXES = {1: ["11.0.0.0/16"], 2: ["11.0.0.0/8", "2a00:1::/32"], 3: ["11.0.7.0/24"]}
@@ -25,10 +26,9 @@ def env(monkeypatch):
     monkeypatch.setattr(crowdsec, "backend", lambda: be)
     monkeypatch.setattr(engine.notify, "send", lambda *a, **k: None)
     db.put("crowdsec_mode", "lapi")
-    with db.tx() as c:
-        c.execute("INSERT INTO asn_rules(asn,name,action,updated_at) VALUES(1,'a','ban',0),(2,'b','captcha',0)")
-        c.execute("INSERT INTO vpn_rules VALUES('nordvpn','DE')")
-        c.execute("INSERT INTO exemptions(kind,value) VALUES('asn','3'),('cidr','11.1.0.0/16')")
+    rules.upsert([{"asn": 1, "name": "a", "action": "ban"}, {"asn": 2, "name": "b", "action": "captcha"}])
+    vpn.add([("nordvpn", "DE")])
+    exemptions.add([("asn", "3", ""), ("cidr", "11.1.0.0/16", "")])
     return be
 
 
@@ -60,8 +60,7 @@ def test_second_run_is_noop_then_diff(env):
     env.calls.clear()
     engine.run("apply", "test")
     assert env.calls == [], "unchanged state must not write anything"
-    with db.tx() as c:
-        c.execute("DELETE FROM exemptions WHERE kind='asn'")
+    exemptions.delete("asn", "3")
     db.put("sanity_percent", 100)
     engine.run("apply", "test")
     s = __import__("json").loads(last_run()["summary"])
@@ -71,8 +70,7 @@ def test_second_run_is_noop_then_diff(env):
 
 def test_add_happens_before_delete(env):
     engine.run("apply", "test")
-    with db.tx() as c:
-        c.execute("DELETE FROM vpn_rules")
+    vpn.select("nordvpn", [], "exact")
     db.put("sanity_percent", 100)
     env.calls.clear()
     engine.run("apply", "test")
@@ -105,8 +103,7 @@ def test_source_error_leaves_crowdsec_untouched(env, monkeypatch):
 def test_sanity_blocks_large_change(env):
     engine.run("apply", "test")
     before = list(env.decisions)
-    with db.tx() as c:
-        c.execute("DELETE FROM asn_rules WHERE asn=2")
+    rules.delete([2])
     engine.run("apply", "test")
     assert last_run()["status"] == "blocked"
     assert env.decisions == before
@@ -117,8 +114,7 @@ def test_sanity_blocks_large_change(env):
 
 def test_stopped_run_records_every_reason(env):
     engine.run("apply", "test")
-    with db.tx() as c:
-        c.execute("DELETE FROM asn_rules WHERE asn=2")
+    rules.delete([2])
     engine.run("apply", "test")
     reasons = json.loads(last_run()["summary"])["stopped"]
     assert len(reasons) >= 2 and any("Range count" in r for r in reasons), reasons
@@ -126,8 +122,7 @@ def test_stopped_run_records_every_reason(env):
 
 def test_confirmed_run_applies_only_the_reviewed_result(env):
     engine.run("apply", "test")
-    with db.tx() as c:
-        c.execute("DELETE FROM asn_rules WHERE asn=2")
+    rules.delete([2])
     engine.run("apply", "test")
     stopped = last_run()
     before = list(env.decisions)
@@ -179,9 +174,7 @@ def test_preview_counts_against_applied(env):
     p = engine.preview()
     assert p["ban"]["add"] == 0 and p["ban"]["remove"] == 0
     before = list(env.decisions)
-    with db.tx() as c:
-        c.execute("DELETE FROM asn_rules WHERE asn=2")
-        db.bump_rev(c)
+    rules.delete([2])
     p = engine.preview()
     assert p["captcha"]["total"] == 0 and p["captcha"]["remove"] > 0
     assert env.decisions == before  # preview writes nothing to CrowdSec
@@ -301,8 +294,7 @@ def test_ipv4_mapped_protection_covers_the_ipv4_address(env):
 
 def test_additions_happen_before_any_deletion(env):
     engine.run("apply", "test")
-    with db.tx() as c:   # AS2 moves its ranges from captcha to ban
-        c.execute("UPDATE asn_rules SET action='ban' WHERE asn=2")
+    rules.upsert([{"asn": 2, "name": "b", "action": "ban"}])   # AS2 moves its ranges from captcha to ban
     env.calls.clear()
     engine.run("apply", "test", force=True)
     ops = [c[0] for c in env.calls]
