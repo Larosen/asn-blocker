@@ -424,6 +424,10 @@ DATA_DIR=./data uvicorn app.main:app --reload --port 8080
 ```
 
 - Backend: FastAPI and SQLite (`app/`); frontend: plain HTML/CSS/JavaScript without a build step (`app/static/`).
+  - `app/api/` – HTTP routers, one per area; `app/store/` – data access, one module per area (each table has exactly
+    one owner, see `tests/test_architecture.py`); `app/engine.py` – computing and applying the desired state;
+    `app/sources.py` – external data; `app/crowdsec.py` – LAPI and Docker backends.
+  - Schema changes: append a step to `MIGRATIONS` in `app/db.py`; it runs once per database, in order.
 - UI tests (Playwright and axe in Chromium, against an offline demo server with fixed data):
   `cd tests/ui && npm ci && npx playwright install chromium && npm test`. The same demo server is handy for
   development: `python tests/ui/server.py /tmp/asnb-demo 8090`, sign in as `admin` / `correct-horse-battery`.

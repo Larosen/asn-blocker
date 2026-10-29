@@ -158,6 +158,15 @@ def asn_name(asn):
     return r["name"] if r else ""
 
 
+def asn_count():
+    return db.q1("SELECT count(*) n FROM asn_names")["n"]
+
+
+def asn_info(asn):
+    """Name, type (bgp.tools class) and country of an ASN from the local list; empty strings if unknown."""
+    return db.q1("SELECT name, class, cc FROM asn_names WHERE asn=?", (asn,)) or {"name": "", "class": "", "cc": ""}
+
+
 # --- Prefixes ----------------------------------------------------------------------------------
 
 def asn_prefixes(asn, use_cache=True):

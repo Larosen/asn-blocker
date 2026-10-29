@@ -10,21 +10,22 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_FILE = DATA_DIR / "asn-blocker.db"
 
-SCHEMA = """
+# --- Schema and migrations ------------------------------------------------------------------------------
+# The schema version is SQLite's user_version. Each migration runs once, in its own transaction, in order.
+# Databases from before 0.7.6 have version 0: their tables already exist, so every migration here is idempotent.
+
+BASE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS asn_rules (
   asn INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', action TEXT NOT NULL CHECK (action IN ('ban','captcha')),
-  note TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', updated_at REAL NOT NULL,
-  expires_at REAL);  -- NULL = permanent; expired rules are removed by the scheduler
+  note TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual', updated_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS vpn_rules (provider TEXT NOT NULL, country TEXT NOT NULL, PRIMARY KEY (provider, country));
 CREATE TABLE IF NOT EXISTS exemptions (
   kind TEXT NOT NULL CHECK (kind IN ('asn','cidr')), value TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (kind, value));
 -- Self-protection: IPs/ASNs that must never be blocked
--- mode (ASNs only): 'exempt' = never blocked, 'captcha' = may be behind a captcha but never banned
 CREATE TABLE IF NOT EXISTS protected (kind TEXT NOT NULL CHECK (kind IN ('asn','ip')), value TEXT NOT NULL,
-  note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, mode TEXT NOT NULL DEFAULT 'exempt'
-  CHECK (mode IN ('exempt','captcha')), PRIMARY KEY (kind, value));
+  note TEXT NOT NULL DEFAULT '', created REAL NOT NULL DEFAULT 0, PRIMARY KEY (kind, value));
 CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', last_status TEXT);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL, triggered_by TEXT NOT NULL,
@@ -45,6 +46,56 @@ CREATE TABLE IF NOT EXISTS attack_ips (day TEXT NOT NULL, ip TEXT NOT NULL, asn 
   alerts INTEGER NOT NULL, scenarios TEXT NOT NULL DEFAULT '[]', last_seen REAL NOT NULL, PRIMARY KEY (day, ip));
 CREATE INDEX IF NOT EXISTS attack_ips_asn ON attack_ips(asn, day);
 """
+
+
+def _has_column(c, table, column):
+    return column in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+
+
+def _m2_protection_mode(c):
+    # mode (ASNs only): 'exempt' = never blocked, 'captcha' = may be behind a captcha but never banned
+    if not _has_column(c, "protected", "mode"):
+        c.execute("ALTER TABLE protected ADD COLUMN mode TEXT NOT NULL DEFAULT 'exempt' CHECK (mode IN ('exempt','captcha'))")
+
+
+def _m3_rule_lifetime(c):
+    # NULL = permanent; expired rules are removed by the scheduler
+    if not _has_column(c, "asn_rules", "expires_at"):
+        c.execute("ALTER TABLE asn_rules ADD COLUMN expires_at REAL")
+
+
+MIGRATIONS = [  # (version, description, SQL script or function(connection))
+    (1, "base schema", BASE_SCHEMA),
+    (2, "self-protection mode per ASN", _m2_protection_mode),
+    (3, "lifetime of ASN rules", _m3_rule_lifetime),
+]
+
+
+def schema_version(c=None):
+    return (c or conn()).execute("PRAGMA user_version").fetchone()[0]
+
+
+def migrate():
+    c = conn()
+    for version, _, step in MIGRATIONS:
+        if version <= schema_version(c):
+            continue
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            if version <= schema_version(c):  # another process (e.g. the CLI) migrated meanwhile
+                c.execute("ROLLBACK")
+                continue
+            if isinstance(step, str):  # plain statements separated by ';' (no ';' inside comments or strings)
+                for stmt in filter(str.strip, step.split(";")):
+                    c.execute(stmt)
+            else:
+                step(c)
+            c.execute(f"PRAGMA user_version = {int(version)}")
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+
 
 _local = threading.local()
 _write_lock = threading.RLock()
@@ -76,6 +127,16 @@ def tx():
             raise
 
 
+@contextmanager
+def tx_or(c=None):
+    """The given transaction, or a new one: lets store functions join a larger transaction (e.g. an import)."""
+    if c is not None:
+        yield c
+    else:
+        with tx() as c:
+            yield c
+
+
 def q(sql, args=()):
     return [dict(r) for r in conn().execute(sql, args).fetchall()]
 
@@ -88,11 +149,7 @@ def q1(sql, args=()):
 def init():
     os.umask(0o077)  # also covers the -wal/-shm files, which contain the same secrets
     with _write_lock:
-        conn().executescript(SCHEMA)
-        if "mode" not in {r[1] for r in conn().execute("PRAGMA table_info(protected)")}:  # before 0.7.3
-            conn().execute("ALTER TABLE protected ADD COLUMN mode TEXT NOT NULL DEFAULT 'exempt'")
-        if "expires_at" not in {r[1] for r in conn().execute("PRAGMA table_info(asn_rules)")}:  # before 0.7.3
-            conn().execute("ALTER TABLE asn_rules ADD COLUMN expires_at REAL")
+        migrate()
     try:
         os.chmod(DB_FILE, 0o600)
     except OSError:
@@ -154,6 +211,10 @@ def put(key, value, c=None):
 def bump_rev(c):
     """Rules changed -> UI shows 'not applied'."""
     put("config_rev", (get("config_rev") or 0) + 1, c)
+
+
+def audit_log(limit=200):
+    return q("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))
 
 
 def audit(user, action, detail=None):

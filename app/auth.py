@@ -284,8 +284,8 @@ def drop_session(token):
         c.execute("DELETE FROM sessions WHERE token_hash=?", (_h(token or ""),))
 
 
-def drop_all_sessions():
-    with db.tx() as c:
+def drop_all_sessions(c=None):
+    with db.tx_or(c) as c:
         c.execute("DELETE FROM sessions")
 
 

@@ -10,10 +10,9 @@ import ipaddress
 import os
 import re
 import struct
-import time
 from pathlib import Path
 
-from . import db
+from .store import protection
 
 HOST_UTMP = Path(os.environ.get("HOST_UTMP", "/host/utmp"))
 # systemd-logind's session registry (/run/systemd/sessions): the only source on distributions without utmp
@@ -110,34 +109,12 @@ def ssh_sessions(path: Path | None = None, sessions_dir: Path | None = None):
     return [], ("not readable: " + "; ".join(errors)) if errors else "not mounted"
 
 
-ASN_MODES = ("exempt", "captcha")  # never blocked | at most behind a captcha (never banned)
-
-
-def protected():
-    return db.q("SELECT kind, value, note, created, mode FROM protected ORDER BY kind, value")
-
-
-def protected_asns(mode=None):
-    """Protected ASNs, optionally only those with the given mode."""
-    rows = db.q("SELECT value, mode FROM protected WHERE kind='asn'")
-    return {int(r["value"]) for r in rows if mode is None or r["mode"] == mode}
-
-
-def add(kind: str, value: str, note: str = "", mode: str = "exempt"):
-    with db.tx() as c:
-        c.execute("INSERT OR REPLACE INTO protected(kind,value,note,created,mode) VALUES(?,?,?,?,?)",
-                  (kind, value, note, time.time(), mode if kind == "asn" else "exempt"))
-        db.bump_rev(c)
-
-
-def set_mode(asn: int, mode: str) -> bool:
-    if mode not in ASN_MODES:
-        raise ValueError(mode)
-    with db.tx() as c:
-        n = c.execute("UPDATE protected SET mode=? WHERE kind='asn' AND value=?", (mode, str(asn))).rowcount
-        if n:
-            db.bump_rev(c)
-    return bool(n)
+# The protected IPs and ASNs themselves are stored in store.protection
+ASN_MODES = protection.ASN_MODES
+protected = protection.listing
+protected_asns = protection.asns
+add = protection.add
+set_mode = protection.set_mode
 
 
 def protect_ip(ip: str, note: str, with_asn: bool = False, asn_mode: str = "captcha"):

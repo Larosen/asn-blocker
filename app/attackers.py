@@ -13,7 +13,9 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from . import crowdsec, db, notify, selfprotect, sources
+from . import crowdsec, db, notify, sources
+from .store import exemptions, protection
+from .store import rules as rule_store
 
 log = logging.getLogger("asn_blocker.attackers")
 
@@ -196,11 +198,11 @@ def report(days=7, limit=100):
     scen = defaultdict(Counter)
     for r in db.q("SELECT asn, scenarios FROM attack_ips WHERE asn IS NOT NULL AND day >= date('now', ?)", (since,)):
         scen[r["asn"]].update(json.loads(r["scenarios"]))
-    rules = {r["asn"]: r["action"] for r in db.q("SELECT asn, action FROM asn_rules")}
+    rules = rule_store.actions()
     names = {r["asn"]: r for r in db.q("SELECT asn, name, class, cc FROM asn_names WHERE asn IN (SELECT DISTINCT asn FROM "
                                        "attack_ips WHERE day >= date('now', ?))", (since,))}
-    shielded = selfprotect.protected_asns("exempt") | {int(r["value"]) for r in db.q("SELECT value FROM exemptions WHERE kind='asn'")}
-    capped = selfprotect.protected_asns("captcha")
+    shielded = protection.asns("exempt") | set(exemptions.asns())
+    capped = protection.asns("captcha")
     out = []
     for r in rows:
         n = names.get(r["asn"])

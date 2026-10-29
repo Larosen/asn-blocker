@@ -14,6 +14,7 @@ import sys
 import time
 
 from . import auth, db, selfprotect, sources
+from .store import rules as rule_store
 
 
 def check_sources() -> bool:
@@ -44,7 +45,7 @@ def check_sources() -> bool:
         return f"1.1.1.1 -> AS{r['asns'][0]}, {r['prefix']}"
 
     def ripe_search():
-        r = sources.search_asn("hetzner") if not db.q1("SELECT 1 x FROM asn_names LIMIT 1") else []
+        r = sources.search_asn("hetzner") if not sources.asn_info(24940)["name"] else []
         if not r:  # local list present -> check RIPE search directly
             data = sources.http_get(f"{sources.RIPE}/searchcomplete/data.json", {"resource": "hetzner", "sourceapp": sources.RIPE_APP}, 20)
             r = [s for c in data["data"]["categories"] if c["category"] == "ASNs" for s in c["suggestions"]]
@@ -55,7 +56,7 @@ def check_sources() -> bool:
         n = sources.refresh_asn_names()
         hit = sources.search_asn("hetzner")
         expect(any(h["asn"] == 24940 for h in hit), f"AS24940 not found: {hit[:3]}")
-        cls = db.q1("SELECT class FROM asn_names WHERE asn=24940")["class"]
+        cls = sources.asn_info(24940)["class"]
         return f"{n} ASNs loaded, AS24940 found (type: {cls or '-'})"
 
     def spamhaus():
@@ -122,11 +123,7 @@ def protect(args) -> bool:
     except sources.SourceError as e:
         print(f"IP {ip} protected, could not determine ASN: {sources.clean(e)}")
         return False
-    with db.tx() as c:
-        if mode == "exempt":
-            changed = [a for a in asns if c.execute("DELETE FROM asn_rules WHERE asn=?", (a,)).rowcount]
-        else:
-            changed = [a for a in asns if c.execute("UPDATE asn_rules SET action='captcha' WHERE asn=? AND action='ban'", (a,)).rowcount]
+    changed = rule_store.apply_protection(asns, mode)
     print(f"Protected: {ip}" + "".join(f", AS{a} {sources.clean(sources.asn_name(a), 60)} "
                                        f"({'never blocked' if mode == 'exempt' else 'at most captcha'})" for a in asns))
     if changed:
@@ -192,7 +189,7 @@ def main():
     if cmd == "reset-auth":
         with db.tx() as c:
             db.put("auth_mode", None, c)
-            c.execute("DELETE FROM sessions")
+            auth.drop_all_sessions(c)
         print(f"Sign-in reset. Open the web UI and complete the setup with this setup token:\n  {auth.new_setup_token()}\n"
               "(Any older setup token is no longer valid.)")
     elif cmd == "untrust-proxy":
