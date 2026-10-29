@@ -69,3 +69,14 @@ test("command palette: navigate and check an IP", async () => {
   assert.deepEqual(p.errors, []);
   await p.context().close();
 });
+
+test("settings: routing table status and loading it on demand", async () => {
+  const p = await h.page();
+  await open(p, h.base, "settings");
+  assert.match(await p.textContent("#routing"), /Not loaded – RIPEstat is used/);
+  await p.click("#routing-refresh");
+  await p.waitForFunction(() => /last attempt failed: demo: no download/.test(document.querySelector("#routing").textContent), null, { timeout: 10000 });
+  assert.equal(await p.isDisabled("#routing-refresh"), false);
+  assert.deepEqual(p.errors, []);
+  await p.context().close();
+});

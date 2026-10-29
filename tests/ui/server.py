@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 if __name__ == "__main__":
     os.environ["DATA_DIR"] = sys.argv[1]
 
-from app import crowdsec, db, engine, sources  # noqa: E402
+from app import crowdsec, db, engine, routing, sources  # noqa: E402
 from tests.conftest import FakeBackend  # noqa: E402
 
 PASSWORD = "correct-horse-battery"
@@ -66,6 +66,11 @@ def install_fakes(patch=setattr):
     for p in sources.PROVIDERS.values():
         patch(p, "fetch", lambda: list(VPN_ROWS))
         patch(p, "ips", lambda code: [v for cc, _, v in VPN_ROWS if cc == code])
+    def fake_routing_refresh(download=None):
+        db.put("routes_tried", time.time())
+        db.put("routes_error", "demo: no download")
+        raise routing.RoutingError("demo: no download")
+    patch(routing, "refresh", fake_routing_refresh)
     backend = FakeBackend()
     patch(crowdsec, "backend", lambda: backend)
     return backend

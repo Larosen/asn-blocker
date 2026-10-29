@@ -1,4 +1,5 @@
-"""External data sources: RIPEstat, bgp.tools (ASN names), Spamhaus ASN-DROP, VPN server lists."""
+"""External data sources: the local routing table with RIPEstat as fallback, bgp.tools (ASN names), Spamhaus
+ASN-DROP, VPN server lists."""
 import csv
 import io
 import ipaddress
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import httpx
 
-from . import db
+from . import db, routing
 
 log = logging.getLogger("asn_blocker.sources")
 
@@ -43,7 +44,7 @@ def clean(value, limit=120):
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def _fetch_once(url, params, timeout, max_bytes, client_box):
+def _fetch_once(url, params, timeout, max_bytes, client_box, sink=None):
     deadline = time.monotonic() + timeout
     host = httpx.URL(url).host
     with httpx.Client(timeout=min(timeout, 30), follow_redirects=False, headers={"User-Agent": USER_AGENT}) as client:
@@ -57,10 +58,14 @@ def _fetch_once(url, params, timeout, max_bytes, client_box):
                     url, params = str(nxt), None
                     continue
                 r.raise_for_status()
-                buf = bytearray()
+                buf, size = bytearray(), 0
                 for chunk in r.iter_bytes():
-                    buf += chunk
-                    if len(buf) > max_bytes:
+                    size += len(chunk)
+                    if sink:
+                        sink(chunk)
+                    else:
+                        buf += chunk
+                    if size > max_bytes:
                         raise httpx.HTTPError(f"response larger than {max_bytes // 2**20} MB")
                     if time.monotonic() > deadline:
                         raise httpx.HTTPError(f"no complete response within {timeout} s")
@@ -68,14 +73,14 @@ def _fetch_once(url, params, timeout, max_bytes, client_box):
         raise httpx.HTTPError("too many redirects")
 
 
-def _fetch(url, params, timeout, max_bytes=MAX_BYTES):
+def _fetch(url, params, timeout, max_bytes=MAX_BYTES, sink=None):
     """GET with a hard size cap (after decompression), redirects only to https on the same host, and an overall
     deadline that is enforced from outside – a server dripping header bytes cannot hold a run for hours."""
     result, client_box = {}, []
 
     def work():
         try:
-            result["body"] = _fetch_once(url, params, timeout, max_bytes, client_box)
+            result["body"] = _fetch_once(url, params, timeout, max_bytes, client_box, sink)
         except Exception as e:  # noqa: BLE001 - handed to the caller
             result["error"] = e
 
@@ -100,6 +105,15 @@ def http_get(url, params=None, timeout=60, as_text=False, max_bytes=MAX_BYTES):
         except (httpx.HTTPError, ValueError) as e:
             last = e
     raise SourceError(f"{clean(url)}: {clean(last)}")
+
+
+def download(url, path, timeout=600, max_bytes=MAX_BYTES):
+    """Streams a large response into a file (same limits as http_get, but not held in memory)."""
+    try:
+        with open(path, "wb") as f:
+            _fetch(url, None, timeout, max_bytes, sink=f.write)
+    except (httpx.HTTPError, OSError) as e:
+        raise SourceError(f"{clean(url)}: {clean(e)}") from e
 
 
 def _ripe(endpoint, resource, timeout=60):
@@ -172,6 +186,9 @@ def asn_info(asn):
 def asn_prefixes(asn, use_cache=True):
     """All announced prefixes (v4+v6) of an ASN, cached. Raises SourceError on an invalid response."""
     key = f"prefixes:{asn}"
+    local = routing.prefixes(asn)
+    if local is not None:
+        return local
     if use_cache:
         hit = db.cache_get(key, PREFIX_TTL)
         if hit is not None:
@@ -187,13 +204,16 @@ def asn_prefixes(asn, use_cache=True):
 
 
 def prefixes_many(asns, use_cache=True):
-    """Parallel, at most 4 concurrent requests to RIPEstat."""
+    """From the local routing table, or in parallel from RIPEstat (at most 4 concurrent requests)."""
     asns = list(asns)
     with ThreadPoolExecutor(4) as ex:
         return dict(zip(asns, ex.map(lambda a: asn_prefixes(a, use_cache), asns), strict=True))
 
 
 def ip_info(ip):
+    local = routing.lookup(ip)
+    if local is not None:
+        return local
     key = f"ipinfo:{ip}"
     hit = db.cache_get(key, 86400)
     if hit is not None:

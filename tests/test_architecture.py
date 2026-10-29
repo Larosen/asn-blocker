@@ -10,7 +10,7 @@ OWNERS = {  # table -> the only module (relative to app/) with SQL for it
     "asn_rules": "store/rules.py", "exemptions": "store/exemptions.py", "vpn_rules": "store/vpn.py",
     "protected": "store/protection.py", "watch_ips": "store/watch.py", "runs": "store/runs.py",
     "run_changes": "store/runs.py", "applied": "store/runs.py", "exempt_index": "store/runs.py",
-    "attack_ips": "attackers.py", "sessions": "auth.py", "settings": "db.py", "cache": "db.py", "audit_log": "db.py",
+    "attack_ips": "attackers.py", "routes": "routing.py", "sessions": "auth.py", "settings": "db.py", "cache": "db.py", "audit_log": "db.py",
 }
 SQL = re.compile(r"\b(?:FROM|INTO|UPDATE|JOIN|TABLE(?: IF NOT EXISTS)?|table_info\()\s*([a-z_]+)", re.I)
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.7 (2026-10-29)
+- **Local routing table**: the prefixes of every network come from a copy of the global routing table (bgp.tools,
+  ~1.5 million prefixes), loaded once a day into its own file `routes.db` (~75 MB) and swapped in atomically.
+  Runs no longer send one request per ASN, every ASN comes from the same snapshot, and IP lookups (Check IP, search
+  by IP, Attackers, own network) work without network access. The table checks itself: implausibly small
+  downloads, prefixes seen by fewer than five peers, prefixes shorter than /8 (IPv6 /16) and non-public ranges are
+  rejected; a failed update keeps the previous table
+- Without a current table (first start, or no successful update for three days) RIPEstat is asked as before
+- **Settings → Maintenance → Routing table** shows its state and loads it on demand; `check-sources` checks it too
+- Compared with RIPEstat the prefixes match closely (e.g. AS24940, AS14061, AS3320: identical address space); the
+  first run after the update may differ slightly, within the sanity limits
+
 ## 0.7.6 (2026-10-29) – internal restructuring, no visible change
 - **Numbered database migrations** (SQLite `user_version`): each schema change runs once, in its own transaction;
   existing databases are recognised and brought up to date without data changes
