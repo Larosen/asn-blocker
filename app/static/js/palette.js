@@ -31,11 +31,12 @@ function Palette({ dlg, signOut }) {
   const input = useRef(null), list = useRef(null);
   const all = items(q, signOut), cur = Math.min(sel, Math.max(0, all.length - 1));
   useEffect(() => { list.current?.querySelector(`#cmdk-${cur}`)?.scrollIntoView({ block: "nearest" }); }, [cur, q]);
-  const run = (i) => { const it = all[i]; if (!it) return; dlg.close(); it.run(); };
+  // from the field itself: typing can be ahead of the last render (Enter right after the last key)
+  const run = (i) => { const now = items(input.current?.value ?? q, signOut), it = now[i] ?? now[0]; if (!it) return; dlg.close(); it.run(); };
   const key = (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setSel((cur + 1) % Math.max(1, all.length)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSel((cur - 1 + all.length) % Math.max(1, all.length)); }
-    else if (e.key === "Enter") { e.preventDefault(); run(cur); }
+    else if (e.key === "Enter") { e.preventDefault(); run(e.target.value === q ? cur : 0); }
   };
   let group = "";
   return html`<div class="cmdk-input"><input ref=${input} type="text" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list"
@@ -60,7 +61,7 @@ export function openPalette(signOut) {
     dlg.setAttribute("aria-label", t("Command palette"));
     document.body.append(dlg);
     dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });  // click on the backdrop
-    dlg.addEventListener("close", () => render(null, dlg));
+    dlg.addEventListener("close", () => { if (!dlg.open) render(null, dlg); });  // not if it was reopened meanwhile
   }
   render(null, dlg);  // always start empty, even if the last close event has not been handled yet
   render(html`<${Palette} dlg=${dlg} signOut=${signOut} />`, dlg);
