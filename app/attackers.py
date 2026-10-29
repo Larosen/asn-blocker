@@ -26,7 +26,11 @@ MIN_IPS = 5                # attacking IPs before a whole network is recommended
 LARGE = 2 ** 22            # IPv4 addresses (~4 M) from which a network is "large": captcha, not block
 WINDOWS = (7, 30, 90)
 NOTIFY_AGAIN = 30 * 86400  # a network that keeps being recommended is reported again after this long
+AUTO_MODES = ("captcha", "recommended")  # automatic rules: only ever captcha, or the recommended action
+AUTO_DAYS = (7, 30, 90)    # lifetimes of automatic rules
+MAX_AUTO = 10              # automatic rules added per collection at most
 _lock = threading.Lock()
+added = []                 # automatic rules added since the scheduler last looked (it then applies them right away)
 
 
 def _day(ts: str) -> tuple[str, float]:
@@ -107,6 +111,7 @@ def collect(backend=None) -> int:
             db.put("attackers_error", None, c)
         _backfill(deadline)
         _fetch_sizes()
+        auto_rules()
         _notify_new()
         if counted:
             log.info("Attackers: %d new alerts from %d IPs", counted, len({ip for _, ip in rows}))
@@ -166,6 +171,49 @@ def _notify_new():
                     "\n".join(lines) + more + "\nReview them under Attackers.", "warning", page="attackers")
         seen |= {str(r["asn"]): now for r in new}
     db.put("attackers_notified", seen)
+
+
+def auto_settings():
+    return {"mode": db.get("attackers_auto"), "days": db.get("attackers_auto_days")}
+
+
+def auto_rules(now=None):
+    """Turns recommendations into rules with a lifetime, if switched on. A network whose automatic rule was removed
+    before it expired is left alone for the rest of that lifetime. Returns the added rules."""
+    cfg = auto_settings()
+    if cfg["mode"] not in AUTO_MODES:
+        return []
+    now = time.time() if now is None else now
+    life = cfg["days"] * 86400
+    done = {k: v for k, v in (db.get("attackers_auto_added") or {}).items() if now - v < life}
+    new = [r for r in report(7)["rows"] if r["recommendation"]["kind"] == "recommend" and str(r["asn"]) not in done][:MAX_AUTO]
+    if not new:
+        db.put("attackers_auto_added", done)
+        return []
+    rules = [{"asn": r["asn"], "name": r["name"], "source": "attackers", "expires_at": now + life,
+              "action": "captcha" if cfg["mode"] == "captcha" else r["recommendation"]["action"],
+              "note": "automatic: " + r["recommendation"]["reason"]} for r in new]
+    with db.tx() as c:
+        rule_store.upsert(rules, now, c)
+        db.put("attackers_auto_added", done | {str(r["asn"]): now for r in new}, c)
+        db.put("attackers_notified", (db.get("attackers_notified") or {}) | {str(r["asn"]): now for r in new}, c)
+    db.audit("automatic", "attackers.auto", [{k: r[k] for k in ("asn", "action", "expires_at")} for r in rules])
+    act = {"ban": "block", "captcha": "captcha"}
+    for r in rules:
+        log.info("Attackers: AS%s %s -> %s automatically, for %d days", r["asn"], r["name"], act[r["action"]], cfg["days"])
+    notify.send(f"asn-blocker: {len(rules)} attacking network{'s' if len(rules) > 1 else ''} added automatically",
+                "\n".join(f"AS{r['asn']} {r['name'] or '?'} – {act[r['action']]}" for r in rules)
+                + f"\nThe rules expire after {cfg['days']} days. Removing one under ASNs keeps it off for that long.",
+                "warning", page="asns")
+    added.extend(rules)
+    return rules
+
+
+def take_added():
+    """The automatic rules added since the last call (for the scheduler, which applies them right away)."""
+    out = added[:]
+    added.clear()
+    return out
 
 
 def _recommend(row, days):

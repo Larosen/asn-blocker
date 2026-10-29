@@ -389,3 +389,7 @@ h3.inline-h { margin: 0; }
 .sugg { margin-top: 12px; } .sugg h3 { margin: 0; } .sugg p { margin: 6px 0; } .sugg .note { margin: 6px 0; }
 .note.hint { margin: -14px 0 28px; }
 .seg.mt-xs { display: flex; width: max-content; margin-top: 6px; }
+
+/* Attackers: automatic rules */
+#att-auto { margin-bottom: 16px; }
+#att-auto h2 { margin: 0 0 12px; }
