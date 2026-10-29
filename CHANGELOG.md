@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.10 (2026-10-29)
+- **Web UI rebuilt from components**: the single 1,100-line script is now one module per view plus shared parts
+  (navigation, apply bar, dialogs, palette), rendered with Preact and htm (16 KB together, vendored), still without
+  a build step or CDN and under the same strict Content Security Policy. A view only redraws what changed, so
+  live updates no longer rebuild whole tables. Looks and works as before
+- Command palette: reopening it always starts with an empty search
 ## 0.7.9 (2026-10-29)
 - **Live updates**: the web UI follows runs, rule changes and loads through a stream from the server (Server-Sent
   Events) instead of asking every two seconds; the bottom bar shows the phase of a run (collecting data, comparing,
