@@ -188,7 +188,7 @@ or **Captcha**. An IP – for example from a CrowdSec alert – shows the networ
 announces it, the search says so and names the registered holder. The name search uses a local copy of the
 [bgp.tools](https://bgp.tools) ASN list, refreshed weekly. The **Check IP** field at the top offers the same buttons.
 
-![ASN rules with an IP search: 8.8.8.8 resolves to AS15169 with Block and Captcha buttons](docs/screenshots/asns-ip-search.png)
+![ASN rules with a name search: the matching networks with Block and Captcha buttons](docs/screenshots/asns-search.png)
 
 Not sure where to start? **Suggestions** offers curated lists (large cloud platforms, VPS and dedicated hosting,
 ByteDance crawlers) and Spamhaus ASN-DROP. Each list says what else it blocks, and every ASN is shown for review
@@ -459,12 +459,14 @@ DATA_DIR=./data uvicorn app.main:app --reload --port 8080
     `app/sources.py` – external data; `app/crowdsec.py` – LAPI and Docker backends.
   - Schema changes: append a step to `MIGRATIONS` in `app/db.py`; it runs once per database, in order.
   - `app/static/js/` – the web UI: `lib.js` (rendering, text, formatting, API client, a small shared store),
-    `ui.js` (toasts, dialogs, tags), `shell.js` (navigation, banners, apply bar), `views/` (one module per view),
+    `ui.js` (toasts, dialogs, tags), `shell.js` (navigation, tab bar, banners, apply bar), `icons.js` (line icons drawn
+    for the app), `views/` (one module per view),
     `actions.js` (actions shared by several views), `palette.js` (⌘K). Preact and htm are vendored in
     `app/static/vendor/` (see its README for versions, checksums and how to update).
 - UI tests (Playwright and axe in Chromium, against an offline demo server with fixed data):
   `cd tests/ui && npm ci && npx playwright install chromium && npm test`. The same demo server is handy for
   development: `python tests/ui/server.py /tmp/asnb-demo 8090`, sign in as `admin` / `correct-horse-battery`.
+  `npm run screenshots` recreates the screenshots in `docs/screenshots/` from it.
 - API contract: `tests/contract.json` records the routes and the structure of the read endpoints; record an intended
   change with `UPDATE_CONTRACT=1 pytest tests/test_contract.py`.
 - Integration test against a real LAPI: set `CROWDSEC_LAPI_URL`, `CROWDSEC_MACHINE_ID` and `CROWDSEC_PASSWORD`, then

@@ -1,7 +1,7 @@
 // Phone width, user preferences (reduced motion, reduced transparency, more contrast)
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { open, start, VIEWS } from "./harness.mjs";
+import { axe, open, start, VIEWS } from "./harness.mjs";
 
 let h;
 before(async () => { h = await start(); });
@@ -44,5 +44,25 @@ test("reduced transparency and more contrast", async () => {
   assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector(".top")).backdropFilter), "none");
   await cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-contrast", value: "more" }] });
   assert.notEqual(await p.evaluate(() => getComputedStyle(document.querySelector(".nav a:not([aria-current])")).color), before);
+  await p.context().close();
+});
+
+test("phone: tab bar, the More sheet and the theme switch", async () => {
+  const p = await h.page({ viewport: { width: 390, height: 844 }, colorScheme: "dark", bypassCSP: true });
+  await open(p, h.base, "overview");
+  assert.equal(await p.isVisible(".side"), false);
+  await p.click(".tabbar a[href='#/asns']");
+  await p.waitForFunction(() => location.hash === "#/asns");
+  await p.click("#more-open");
+  await p.waitForSelector("#more[open] .nav");
+  await p.waitForTimeout(400);
+  assert.deepEqual(await axe(p), []);
+  await p.click("#more [data-theme-pick='light']");
+  assert.equal(await p.evaluate(() => document.documentElement.dataset.theme), "light");
+  await p.click("#more a[href='#/settings']");
+  await p.waitForFunction(() => location.hash === "#/settings" && !document.querySelector("#more[open]"));
+  // the tab stands in for the page it leads to (the route follows the URL on hashchange, a moment later)
+  await p.waitForFunction(() => document.querySelector("#more-open")?.textContent === "Settings", null, { timeout: 3000 });
+  assert.deepEqual(p.errors, []);
   await p.context().close();
 });
