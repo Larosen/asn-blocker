@@ -1,4 +1,5 @@
 // Shared UI pieces: toasts, the modal dialog, confirmations and small tags.
+import { Icon } from "./icons.js";
 import { act, getState, html, render, setState, t, useStore } from "./lib.js";
 
 // --- Toasts ----------------------------------------------------------------------------------------------------
@@ -21,7 +22,8 @@ export const guard = (fn) => async (...a) => { try { return await fn(...a); } ca
 export function dialog({ title, body, actions = [["cancel", t("Cancel")], ["ok", "OK", "primary"]], onOpen }) {
   const dlg = document.getElementById("dlg"), form = document.getElementById("dlg-form");
   render(null, form);
-  render(html`<div class="dh"><h2 id="dlg-title">${title}</h2></div><div class="db">${body}</div>
+  render(html`<div class="dh"><h2 id="dlg-title">${title}</h2>
+    <button type="button" class="icon-btn dlg-x" onClick=${() => closeDialog()} aria-label=${t("Close")} title=${t("Close")}><${Icon} name="close" /></button></div><div class="db">${body}</div>
     <div class="df">${actions.map(([v, l, c]) => html`<button class=${"btn " + (c || "")} value=${v}>${l}</button>`)}</div>`, form);
   dlg.setAttribute("aria-labelledby", "dlg-title");
   return new Promise((resolve) => {

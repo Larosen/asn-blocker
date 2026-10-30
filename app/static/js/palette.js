@@ -1,6 +1,7 @@
 // Command palette (⌘K / Ctrl+K): every main action from the keyboard.
 import { checkIp, startRun } from "./actions.js";
 import { nextTheme, THEME_NAMES, theme } from "./app-state.js";
+import { Icon } from "./icons.js";
 import { getState, html, IP_RE, render, t, useEffect, useRef, useState } from "./lib.js";
 import { VIEWS, viewName } from "./views/index.js";
 
@@ -8,19 +9,19 @@ import { VIEWS, viewName } from "./views/index.js";
 export const goto = (view, request) => { getState().request = request; location.hash = "#/" + view; window.dispatchEvent(new Event("asnb-request")); };
 
 function items(q, signOut) {
-  const fixed = VIEWS.map((v) => ({ group: t("Go to"), label: viewName(v), run: () => (location.hash = "#/" + v) }));
+  const fixed = VIEWS.map((v) => ({ group: t("Go to"), icon: v, label: viewName(v), run: () => (location.hash = "#/" + v) }));
   fixed.push(
-    { group: t("Actions"), label: t("Apply rules"), hint: t("sync with CrowdSec"), run: () => startRun("apply") },
-    { group: t("Actions"), label: t("Preview"), hint: t("compute without changing anything"), run: () => startRun("plan") },
-    { group: t("Actions"), label: t("Suggested ASN lists"), run: () => goto("asns", { open: "suggestions" }) },
-    { group: t("Actions"), label: t("Paste ASN list"), run: () => goto("asns", { open: "paste" }) },
-    { group: t("Actions"), label: t("Change theme"), hint: THEME_NAMES[theme()], run: nextTheme },
+    { group: t("Actions"), icon: "apply", label: t("Apply rules"), hint: t("sync with CrowdSec"), run: () => startRun("apply") },
+    { group: t("Actions"), icon: "preview", label: t("Preview"), hint: t("compute without changing anything"), run: () => startRun("plan") },
+    { group: t("Actions"), icon: "spark", label: t("Suggested ASN lists"), run: () => goto("asns", { open: "suggestions" }) },
+    { group: t("Actions"), icon: "paste", label: t("Paste ASN list"), run: () => goto("asns", { open: "paste" }) },
+    { group: t("Actions"), icon: theme(), label: t("Change theme"), hint: THEME_NAMES[theme()], run: nextTheme },
   );
-  if (getState().session?.auth_mode === "local") fixed.push({ group: t("Actions"), label: t("Sign out"), run: signOut });
+  if (getState().session?.auth_mode === "local") fixed.push({ group: t("Actions"), icon: "signout", label: t("Sign out"), run: signOut });
   const s = q.trim(), dyn = [];
-  if (IP_RE.test(s)) dyn.push({ group: t("Search"), label: t("Check IP {ip}", { ip: s }), hint: t("status, network, rules"), run: () => checkIp(s) },
-    { group: t("Search"), label: t("Find the network of {ip}", { ip: s }), run: () => goto("asns", { search: s }) });
-  else if (s.length >= 2) dyn.push({ group: t("Search"), label: t("Search ASNs for “{q}”", { q: s }), run: () => goto("asns", { search: s }) });
+  if (IP_RE.test(s)) dyn.push({ group: t("Search"), icon: "ip", label: t("Check IP {ip}", { ip: s }), hint: t("status, network, rules"), run: () => checkIp(s) },
+    { group: t("Search"), icon: "asns", label: t("Find the network of {ip}", { ip: s }), run: () => goto("asns", { search: s }) });
+  else if (s.length >= 2) dyn.push({ group: t("Search"), icon: "search", label: t("Search ASNs for “{q}”", { q: s }), run: () => goto("asns", { search: s }) });
   const needle = s.toLowerCase();
   if (IP_RE.test(s)) return dyn;
   return [...fixed.filter((i) => !needle || i.label.toLowerCase().includes(needle) || i.group.toLowerCase().includes(needle)), ...dyn];
@@ -39,14 +40,14 @@ function Palette({ dlg, signOut }) {
     else if (e.key === "Enter") { e.preventDefault(); run(e.target.value === q ? cur : 0); }
   };
   let group = "";
-  return html`<div class="cmdk-input"><input ref=${input} type="text" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list"
+  return html`<div class="cmdk-input"><${Icon} name="search" size=${18} /><input ref=${input} type="text" role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-autocomplete="list"
       aria-label=${t("Search or jump to")} placeholder=${t("Type a command, a view, an ASN or an IP …")} autocomplete="off" spellcheck="false"
-      aria-activedescendant=${all.length ? `cmdk-${cur}` : ""} value=${q} onInput=${(e) => { setQ(e.target.value); setSel(0); }} onKeyDown=${key} /></div>
+      aria-activedescendant=${all.length ? `cmdk-${cur}` : ""} value=${q} onInput=${(e) => { setQ(e.target.value); setSel(0); }} onKeyDown=${key} /><kbd aria-hidden="true">esc</kbd></div>
     <ul class="cmdk-list" id="cmdk-list" role="listbox" aria-label=${t("Results")} ref=${list}>
       ${all.length ? all.map((it, i) => {
         const head = it.group !== group ? html`<li class="cmdk-group eyebrow" role="presentation">${(group = it.group)}</li>` : null;
         return html`${head}<li class="cmdk-item" role="option" id=${"cmdk-" + i} aria-selected=${i === cur}
-          onClick=${() => run(i)} onMouseMove=${() => i !== cur && setSel(i)}>${it.label}${it.hint ? html`<span class="hint">${it.hint}</span>` : null}</li>`;
+          onClick=${() => run(i)} onMouseMove=${() => i !== cur && setSel(i)}><span class="cmdk-ic"><${Icon} name=${it.icon} /></span>${it.label}${it.hint ? html`<span class="hint">${it.hint}</span>` : null}</li>`;
       }) : html`<li class="empty" role="presentation">${t("No matches")}</li>`}
     </ul>
     <div class="cmdk-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd>${t("select")}</span><span><kbd>↵</kbd>${t("run")}</span><span><kbd>esc</kbd>${t("close")}</span></div>`;

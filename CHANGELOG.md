@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.12 (2026-10-30)
+- **New navigation**: grouped by Monitor, Rules and System, with icons and counts; the current page is a raised key.
+  At the top of the sidebar a status card shows the connection to CrowdSec and the next run; at the bottom the theme
+  is a direct choice (auto, light, dark, OLED) next to the account
+- **Phones**: a tab bar at the bottom (overview, ASNs, attackers, runs, more) instead of a menu that scrolled off the
+  screen; "More" opens a sheet with the whole navigation, the theme and the account. Dialogs open as bottom sheets.
+  The IP check is in the command palette there
+- **Overlays**: dialogs, the command palette and notifications are frosted glass over a dimmed, softened page;
+  dialogs have a close button, the palette shows an icon per entry
+- **Apply bar** as a floating island: the expected change as chips (+/− per action), and while a run is in
+  progress one segment per phase that fills up
+- **Overview**: the share of blocked IPv4 addresses as a large figure, the key numbers as a measurement strip, the
+  map framed with its first and last address; reserved ranges no longer show as dark holes in the dark theme
+- Fix: the hits of the ASN search lay underneath the rules table
+- README screenshots show the new design and only example data; `npm run screenshots` (in `tests/ui`) recreates them
 ## 0.7.11 (2026-10-29)
 - **Automatic rules from Attackers** (opt-in, under Attackers): networks that qualify for a recommendation become
   rules on their own – always as captcha, or with the recommended action – with a lifetime of 7, 30 or 90 days, and
