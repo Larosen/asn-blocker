@@ -62,7 +62,11 @@
     "name": "string",
     "note": "string",
     "source": "string",
-    "stats": "null",
+    "stats": {
+     "addresses": "number",
+     "v4": "number",
+     "v6": "number"
+    },
     "updated_at": "number"
    }
   ],
