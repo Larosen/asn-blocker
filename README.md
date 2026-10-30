@@ -1,78 +1,63 @@
 # asn-blocker
 
-Block or captcha whole networks in [CrowdSec](https://crowdsec.net) by their **AS number** – and keep the IP ranges
-up to date automatically.
+asn-blocker blocks whole networks in [CrowdSec](https://crowdsec.net) by their AS number. You pick the networks
+(for example the hosting providers your scrapers and scanners come from), asn-blocker looks up every IP range they
+announce, leaves out what you exempt, and keeps the result in CrowdSec as *ban* or *captcha* decisions. The ranges are
+refreshed automatically, so new addresses of a network are covered without you doing anything.
 
-Hosting providers and cloud networks are a common source of scrapers, credential stuffing and vulnerability scans.
-Blocking them IP by IP never ends; blocking them by ASN (Autonomous System Number, e.g. `AS14061` for DigitalOcean)
-catches every address the network announces. asn-blocker looks up the current prefixes of the ASNs you choose,
-removes your exemptions and keeps the result in sync with CrowdSec as *ban* or *captcha* decisions.
+![Overview with a map of the IPv4 address space, the share that is blocked, active ranges and the next run](docs/screenshots/overview.png)
 
-- **Web UI** to search ASNs by number, name or IP and choose *Block* or *Captcha* per ASN, with a live map of the
-  blocked IPv4 address space and a command palette (<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>) for every action
-- **Automatic refresh** of the ranges (every 48 h by default), with a preview of every change
-- **Exemptions** for individual IPs/networks, whole ASNs, and the server locations of VPN providers
-  (20 providers, including NordVPN, Proton VPN, Mullvad, Surfshark, ExpressVPN, PureVPN, CyberGhost, Windscribe and
-  Private Internet Access) – so users on those VPNs are not blocked
-- **Lockout protection** for your own connection and active SSH sessions
-- **One container**, no Docker socket, no environment variables; everything is configured in the UI
+## What you need first
 
-![Overview: map of the IPv4 address space with blocked networks, active ranges, last and next run](docs/screenshots/overview.png)
+asn-blocker does not block anything itself. It writes decisions into CrowdSec, and a bouncer enforces them.
 
-## Contents
+| | What for | Where |
+|---|---|---|
+| **CrowdSec Security Engine** 1.6 or newer | Stores the decisions. asn-blocker connects to its Local API (LAPI). | [crowdsecurity/crowdsec](https://github.com/crowdsecurity/crowdsec) |
+| **At least one bouncer** | Enforces the decisions. Without a bouncer, nothing is blocked. | see below |
+| **Docker** with Compose | Runs asn-blocker. | [docs.docker.com](https://docs.docker.com/engine/install/) |
+| Reverse proxy with single sign-on (recommended) | Puts a login in front of the web UI. Pangolin, Authentik or Authelia, for example. | [fosrl/pangolin](https://github.com/fosrl/pangolin), [goauthentik/authentik](https://github.com/goauthentik/authentik), [authelia/authelia](https://github.com/authelia/authelia) |
 
-- [How it works](#how-it-works)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Accessing the web UI](#accessing-the-web-ui)
-- [Using asn-blocker](#using-asn-blocker)
-- [Safeguards](#safeguards)
-- [Operations](#operations)
-- [Troubleshooting](#troubleshooting)
-- [Security](#security)
-- [Development](#development)
+Which bouncer you need depends on what you want to block:
+
+| Bouncer | Ban | Captcha |
+|---|---|---|
+| [Firewall bouncer](https://github.com/crowdsecurity/cs-firewall-bouncer) (nftables/iptables) | all traffic, including SSH | no |
+| [Traefik plugin](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin) | web traffic | yes |
+| [nginx bouncer](https://github.com/crowdsecurity/cs-nginx-bouncer) or [OpenResty bouncer](https://github.com/crowdsecurity/cs-openresty-bouncer) | web traffic | yes |
+
+Captcha needs a bouncer that can show one, configured with a captcha provider (Turnstile, hCaptcha or reCAPTCHA).
+A firewall bouncer ignores captcha decisions.
+
+The container also needs outbound HTTPS to bgp.tools (routing table), stat.ripe.net (fallback) and, if you use
+them, the VPN providers' server lists and spamhaus.org.
 
 ## How it works
 
 ```
- your rules ──► announced prefixes ──► minus exemptions ──► sanity checks ──► CrowdSec LAPI ──► your bouncers
- (ASN + action)   (routing table)       (IPs, ASNs, VPN)      (see Safeguards)   (ban / captcha)
+your rules ─► announced prefixes ─► minus exemptions ─► sanity checks ─► CrowdSec LAPI ─► your bouncers
 ```
 
-1. For each ASN rule, asn-blocker looks up the prefixes the network currently announces – in a local copy of the
-   global routing table from [bgp.tools](https://bgp.tools), loaded once a day (about 80 MB download, 75 MB on
-   disk in `routes.db`). Until it is loaded, or if it could not be refreshed for three days, asn-blocker asks
-   [RIPEstat](https://stat.ripe.net) instead. **Settings → Maintenance** shows its state and can load it right away.
-2. It cuts out all exemptions, then compares the result with what is active in CrowdSec.
-3. It adds new ranges first and removes outdated ones afterwards, so protection never has a gap.
-4. Decisions are created with a limited lifetime (7 days by default) and renewed before they expire; a renewal adds
-   a new decision and lets the old one run out. If asn-blocker stops running, its decisions simply expire.
+1. Once a day asn-blocker loads a copy of the global routing table from [bgp.tools](https://bgp.tools) (about 80 MB)
+   and reads from it which prefixes each of your networks announces.
+2. It removes your exemptions: single IPs and networks, whole ASNs, the servers of VPN providers you allow, and your
+   own connection.
+3. It compares the result with what is active in CrowdSec, adds new ranges first and removes outdated ones afterwards.
+4. Every decision has a lifetime (7 days by default) and is renewed before it runs out. If you stop asn-blocker, its
+   decisions expire on their own.
 
-asn-blocker connects to CrowdSec's Local API (LAPI) as a *machine*, the same way a CrowdSec agent does. Your existing
-bouncers (firewall, Traefik, nginx, …) enforce the decisions; nothing else in your setup changes.
-
-## Requirements
-
-- **CrowdSec** 1.6 or newer with its LAPI reachable from the container (tested with 1.8.1 and 1.8.2-rc1)
-- **Docker** with Compose
-- **A bouncer** that enforces the decisions. Note: *captcha* decisions only work with a bouncer that can show a
-  captcha, such as the [Traefik plugin](https://plugins.traefik.io/plugins/6335346ca4caa9ddeffda116/crowdsec-bouncer-traefik-plugin)
-  or the nginx/OpenResty bouncer. Firewall bouncers (nftables/iptables) ignore captcha decisions.
-- **Recommended: a reverse proxy with single sign-on** (e.g. Pangolin, Authentik, Authelia) in front of the UI
-- Outbound HTTPS from the container to bgp.tools, stat.ripe.net (fallback) and – if used – the VPN provider APIs and
-  spamhaus.org; about 100 MB of free space in the data volume for the routing table
+asn-blocker logs in to the LAPI as a *machine*, the same way a CrowdSec agent does. It only touches decisions it
+created itself. Your existing bouncers, scenarios and blocklists stay as they are.
 
 ## Installation
 
-### 1. Create credentials in CrowdSec
-
-asn-blocker needs its own machine account in CrowdSec. Run this once and note the printed password:
+**1. Create a machine account in CrowdSec** and note the password it prints:
 
 ```bash
 docker exec crowdsec cscli machines add asn-blocker --auto -f -
 ```
 
-### 2. Add the container
+**2. Add the container** to your compose file. It has to share a Docker network with CrowdSec:
 
 ```yaml
 services:
@@ -82,10 +67,9 @@ services:
     restart: unless-stopped
     volumes:
       - asn-blocker-data:/data
-      - /run/systemd/sessions:/host/sessions:ro   # optional: protect active SSH sessions, see "Lockout protection"
+      - /run/systemd/sessions:/host/sessions:ro   # optional: never block your active SSH sessions
     networks:
-      - crowdsec                           # a network in which the CrowdSec container is reachable
-    # Hardening – the app needs none of the dropped privileges
+      - crowdsec                                  # the network your CrowdSec container is in
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid,nodev
@@ -99,383 +83,119 @@ volumes:
 
 networks:
   crowdsec:
-    external: true                         # use the name of your existing network
+    external: true
 ```
-
-The container listens on port `8080` inside the Docker network. **Do not publish it with `ports:`** – see
-[Accessing the web UI](#accessing-the-web-ui).
 
 ```bash
 docker compose up -d asn-blocker
 docker logs asn-blocker 2>&1 | grep -i "setup token"
 ```
 
-The log shows a one-time **setup token**. It is needed for the first visit and becomes invalid once setup is done.
+The web UI listens on port 8080 inside the Docker network. Don't publish it with `ports:`, reach it through your
+reverse proxy instead (point a route with authentication at `http://asn-blocker:8080`). For a first test without a
+proxy, an SSH tunnel works too: see [docs/access.md](docs/access.md).
 
-### 3. First setup in the browser
+**3. Set it up in the browser.** Open the UI and enter the setup token from the log. Then:
 
-1. Open the UI (see next section) and enter the setup token.
-2. Choose how users sign in: through your reverse proxy with SSO, or with the built-in password login.
-3. Under **Settings → CrowdSec connection**, enter the LAPI URL (usually `http://crowdsec:8080`), the machine ID
-   `asn-blocker` and the password from step 1.
-4. Under **Exemptions → Self-protection**, protect your own connection (see [Lockout protection](#lockout-protection)).
-5. Under **ASNs**, add your first rules, check **Preview**, then click **Apply**.
+1. Choose how you sign in: through your reverse proxy, or with a username and password.
+2. **Settings → CrowdSec connection**: LAPI URL (usually `http://crowdsec:8080`), machine ID `asn-blocker` and the
+   password from step 1.
+3. **Exemptions → Self-protection**: protect the IP you are connecting from, so you cannot lock yourself out.
+4. **ASNs**: add your first networks, click **Preview** to see what would change, then **Apply**.
 
-## Accessing the web UI
+If CrowdSec runs directly on the host rather than in Docker, its LAPI has to listen on an address the container can
+reach (`api.server.listen_uri` in CrowdSec's `config.yaml`).
 
-The UI can change what your server blocks, so it should not be reachable from the internet without authentication.
-Docker-published ports also bypass host firewalls such as UFW. Therefore the container has no published port; it is
-reached through the Docker network.
+## Using it
 
-### Behind a reverse proxy with SSO (recommended)
+### Choosing networks
 
-1. Attach asn-blocker to a Docker network your reverse proxy can reach, and point a route or resource at
-   `http://asn-blocker:8080` with authentication enabled.
-2. Open the UI through that route and choose **Reverse proxy with SSO** during setup:
-   - **Trusted proxies** – pre-filled with the container name of the proxy the request came from (e.g.
-     `gerbil.pangolin` for Pangolin), or its IP if no name is known. A container name keeps working when the proxy
-     container is recreated and gets a new IP. Everything you trust may send any username, so never trust a whole
-     shared Docker network.
-   - **Header with username** – the header your proxy sets after a successful login. Use a header the proxy always
-     strips from incoming requests and sets itself:
-     - **Pangolin:** `Remote-User` (Badger 1.2.1 or newer removes client-supplied `Remote-*` headers)
-     - **Authentik / Authelia forward auth:** the user header listed in the middleware's `authResponseHeaders`,
-       e.g. `X-authentik-username` or `Remote-User`
+Under **ASNs** you search by number (`AS14061`), by name (`digitalocean`) or by an IP address from an alert, and set
+each network to **Block** or **Captcha**. A rule can be permanent or expire after 7, 30, 90 days or a year.
+**Paste list** takes many ASNs at once, **Suggestions** offers ready-made lists such as the large cloud platforms,
+each with a note on what else it would block.
 
-Setup checks that the current request actually meets these conditions, so you cannot lock yourself out by a typo.
-Requests that carry the username header twice are rejected. Do not add unauthenticated bypass rules for this route.
+![Searching for networks by name, with Block and Captcha buttons for each hit](docs/screenshots/asns-search.png)
 
-Live updates use one long-lived request per open tab (`/api/events`, Server-Sent Events). Proxies that buffer
-responses delay them; nginx honours the `X-Accel-Buffering: no` header the app sends, Traefik and Pangolin need no
-setting. If the stream is cut, the UI falls back to polling.
+### Exemptions and VPN users
 
-A trusted proxy given as a private IP is replaced by its container name after the first sign-in through it (when
-Docker's DNS knows the name), so a recreated proxy keeps working and a container that later gets the old IP is not
-trusted. If sign-in still
-fails, the **No access** page shows the address the request came from, its container name and the header names it
-received; trust the proxy again with one command:
+Exemptions are cut out of every blocked range: single IPs or networks, whole ASNs, and the servers of VPN
+providers. For a VPN you pick the provider and the countries, and asn-blocker keeps their server IPs reachable.
+20 providers are supported, among them NordVPN, Proton VPN, Mullvad, Surfshark and ExpressVPN.
 
-```bash
-docker exec asn-blocker python -m app.cli trust-proxy gerbil      # container name, IP or CIDR
-docker exec asn-blocker python -m app.cli untrust-proxy 172.18.0.11/32   # remove an outdated entry
-```
+![VPN exemptions for NordVPN with the selected countries](docs/screenshots/vpn.png)
 
-### Built-in login
+### Attackers
 
-Without an SSO proxy, choose **Built-in login**: a username and a password of at least 12 characters, a session cookie
-valid for 12 hours, and throttling after 5 failed attempts. Put the UI behind a TLS-terminating reverse proxy anyway.
+**Attackers** lists the networks behind the IPs your own CrowdSec caught on this server, over 7, 30 or 90 days.
+Hosting networks with 5 or more attacking IPs get a recommendation that you can add with one click. Consumer
+networks are never recommended. If you want, recommended networks can also be added automatically, with a lifetime.
 
-### Temporary access through an SSH tunnel
-
-For testing without a proxy, publish the port on localhost only and tunnel to it:
-
-```yaml
-    ports: ["127.0.0.1:18080:8080"]        # any free host port on the left
-```
-
-```bash
-ssh -L 18080:127.0.0.1:18080 user@your-server   # then open http://localhost:18080
-```
-
-Choose **Built-in login** in this case – the proxy mode can only be set up through the proxy itself.
-
-## Using asn-blocker
-
-### ASN rules
-
-Under **ASNs**, search by number (`14061`, `AS14061`), by name (`digitalocean`) or by **IP address** and set **Block**
-or **Captcha**. An IP – for example from a CrowdSec alert – shows the network that announces it; if no network
-announces it, the search says so and names the registered holder. The name search uses a local copy of the
-[bgp.tools](https://bgp.tools) ASN list, refreshed weekly. The **Check IP** field at the top offers the same buttons.
-
-![ASN rules with a name search: the matching networks with Block and Captcha buttons](docs/screenshots/asns-search.png)
-
-Not sure where to start? **Suggestions** offers curated lists (large cloud platforms, VPS and dedicated hosting,
-ByteDance crawlers) and Spamhaus ASN-DROP. Each list says what else it blocks, and every ASN is shown for review
-before anything is added.
-
-![Suggested lists with a warning about what each list also blocks](docs/screenshots/suggestions.png)
-
-Adding a rule for the network you are currently connected from asks for an explicit confirmation – useful when you
-deliberately want to block, say, a hotel or office network.
-
-To add many at once, use **Paste list**: one ASN per line, optionally followed by a comment, which is kept as a note.
-Lines starting with `#` are skipped.
-
-```
-AS14061  # DigitalOcean
-16509      Amazon AWS
-# 13335    Cloudflare – skipped
-```
-
-Rule changes take effect with the next run. Click **Apply** to run now, or wait for the schedule.
-
-A rule can be **temporary**: set its lifetime (7, 30 or 90 days, 1 year) in the *Expires* column. When the time is
-up, the rule is removed and its ranges are released right away – useful to give an attacking network a timeout and
-reassess it later instead of blocking it forever.
-
-### Exemptions
-
-Exemptions are cut out of every blocked range.
-
-- **Exemptions → IPs and networks** – single addresses or CIDRs, e.g. a partner's server.
-- **Exemptions → Exempt ASNs** – entire networks that must never be blocked.
-- **VPN exemptions** – pick a provider and the countries whose servers should stay reachable. asn-blocker loads the
-  provider's public server list and exempts exactly those server IPs. Optionally the surrounding `/24` (IPv6 `/64`)
-  can be exempted instead; this is broader and may also exempt other servers at the same hosting provider.
-  Note: some VPNs use different addresses for incoming and outgoing traffic. NordVPN users usually connect from a
-  neighbouring address in the same `/24` as the listed server, so choose **whole network** for NordVPN; other NordVPN
-  exits are in `AS207137`, which you can add as an exempt ASN. If a VPN user is still blocked, **Check IP** points
-  out VPN servers listed next to their address.
-  Sources: the providers' own server lists for NordVPN, Mullvad, Surfshark, IVPN, Private Internet Access, AirVPN,
-  Windscribe, IPVanish (with the gluetun data as fallback when IPVanish refuses the download), PrivadoVPN and
-  OVPN; Proton VPN's exit IPs from the daily
-  [ProtonVPN-IPs](https://github.com/tn3w/ProtonVPN-IPs) list; PureVPN, ExpressVPN, CyberGhost, TorGuard, PrivateVPN,
-  VyprVPN, FastestVPN, VPN Unlimited and VPNSecure from the [gluetun](https://github.com/qdm12/gluetun-servers)
-  project's server data (updated about monthly), as these providers publish no list of their own.
-
-![VPN exemptions: NordVPN servers in four European countries are exempted](docs/screenshots/vpn.png)
-
-### Lockout protection
-
-A firewall bouncer applies bans to *all* traffic, including SSH. To keep you from locking yourself out:
-
-- **Active SSH sessions** are detected automatically when the host's session registry is mounted read-only:
-  `/run/systemd/sessions:/host/sessions:ro` on any system with systemd (as in the compose file), or
-  `/var/run/utmp:/host/utmp:ro` on systems without systemd-logind. Some current distributions no
-  longer have a utmp file. The IPs of these sessions are never blocked. **Exemptions → Self-protection** shows whether
-  sessions are detected.
-- **Protected IPs** (Exemptions → Self-protection) are never blocked, not even through Spamhaus or a confirmed run.
-  By default only the IP itself is protected. Home connections usually change their IP, so you can also protect
-  its **ASN**, in one of two modes:
-  - **At most captcha** (default): the network is never banned. Ban rules for it become captcha, and bans from
-    other sources inside it are downgraded to captcha. Firewall bouncers ignore captchas, so SSH stays reachable,
-    while web visitors from that network still have to solve a captcha.
-  - **Never blocked**: the whole network is exempt from everything. Rules for it are rejected. Use this only for
-    small networks you control – a big provider network also carries attackers.
-
-  The mode can be switched per ASN with one click. Independently of this, CrowdSec keeps banning single attacking
-  IPs from a protected network itself. From an SSH session, one command protects your connection:
-  ```bash
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect          # IP of this SSH connection
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn    # … and its ASN, at most captcha
-  docker exec -e SSH_CLIENT asn-blocker python -m app.cli protect --asn-exempt  # … and its ASN, never blocked
-  docker exec asn-blocker python -m app.cli protect --list                  # show what is protected
-  ```
-- The **Overview** warns if the IP you are browsing from is affected by a block, with a one-click exemption.
-- Before writing anything, every run checks that no protected IP would be blocked, and aborts otherwise.
-
-### Watched IPs and notifications
-
-Add IPs that must stay reachable – your phone, monitoring, a customer – under **Exemptions → Watched IPs**. After
-every run they are checked; if one would be affected, you get a notification.
-
-Notifications are sent when a run fails, when the sanity check stops a run, when a watched IP is affected, and when
-networks newly qualify for a recommendation under **Attackers** (each network at most once in 30 days) or are added
-as automatic rules.
-Configure them under **Settings → Notifications** for [ntfy](https://ntfy.sh), [Gotify](https://gotify.net) or a JSON
-webhook. **Send test** checks the values before they are saved and reports the server's answer, e.g. a rejected
-token; **Save** is only possible after a successful test. Each notification links to the run it is about.
-
-**ntfy with access control** (recommended for self-hosted ntfy with `auth-default-access: deny-all`):
-
-```bash
-docker exec ntfy ntfy user add asn-blocker                       # password is not needed afterwards
-docker exec ntfy ntfy access asn-blocker asn-blocker write-only   # user, topic, permission
-docker exec ntfy ntfy token add asn-blocker                      # prints tk_…
-docker exec ntfy ntfy access <your-user> asn-blocker read-only    # the account your phone subscribes with
-```
-
-In asn-blocker: URL `https://ntfy.example.com/asn-blocker`, format *ntfy*, access token `tk_…`. The token is sent as
-`Authorization: Bearer` header, is never shown again, and is discarded if the URL is changed to a different server.
-If ntfy runs on the same Docker network, the internal address (e.g. `http://ntfy:80/asn-blocker`) avoids the detour
-through the reverse proxy – an SSO-protected proxy route would reject the request.
-
-For **Gotify**, use `https://gotify.example.com/message` and the application token as access token.
-
-### Attackers: which networks to block
-
-**Attackers** shows the networks behind the IPs that your own CrowdSec caught on this server – brute force, scans,
-exploit attempts – over the last 7, 30 or 90 days: attacking IPs and alerts per ASN, the most frequent scenarios and
-when they were last seen. Community blocklists, manual decisions and asn-blocker's own decisions are not counted.
-
-A hosting network with 5 or more attacking IPs gets a recommendation – *Block*, or *Captcha* for very large clouds and
-transit networks – and can be added with one click (the usual confirmations for consumer and your own networks apply).
-**New rules** sets whether such a rule is permanent or expires after 30 or 90 days.
-Consumer networks are never recommended. CrowdSec keeps alerts for about a week; asn-blocker therefore reads new
-alerts roughly every hour and keeps a compact summary (one row per IP and day) for 180 days. The ASN comes from
-CrowdSec's GeoIP enrichment, or from the routing table if the alert has none.
-
-**Automatic rules** (off by default): recommended networks can be added on their own after every collection –
-either always as *Captcha*, or with the recommended action – for 7, 30 or 90 days, and are applied right away.
-The same limits apply as for the recommendation itself: consumer, exempt and protected networks are never added,
-networks protected against bans at most get a captcha, and at most 10 networks are added per collection. Each batch
-is logged and sends a notification. If you remove an automatic rule, the network is not added again until that
-lifetime has passed.
-
-### Spamhaus ASN-DROP
-
-Optionally, the [Spamhaus ASN-DROP](https://www.spamhaus.org/blocklists/do-not-route-or-peer/) list – networks run
-entirely by cybercriminals – can be included as an additional set of ASN rules (**Settings → Schedule and safety**).
+![Attacking networks with their number of IPs, the most common scenarios and a recommendation](docs/screenshots/attackers.png)
 
 ### Checking an IP
 
-The **Check IP** field at the top of every page shows, for any IP, its ASN and prefix, whether it is currently
-blocked, and which rule or exemption applies – with buttons to block its network or put it behind a captcha.
+The **Check IP** field at the top shows for any address which network it belongs to, whether it is blocked, and
+which rule decides. That is useful when a visitor reports they cannot reach your site.
 
-Under **Why** it lists every rule that covers the address and marks the one that decides – also when that is not
-the IP's own network (e.g. a larger prefix of another ASN), a VPN exemption, self-protection or Spamhaus. If the
-current rules would treat the address differently from what is applied, it says so.
+![Check IP: the address is blocked, and the rule that decides is listed under Why](docs/screenshots/check-ip.png)
 
-### How rules work together
+### Runs and history
 
-All rules – ASN rules, exemptions, VPN exemptions, self-protection and Spamhaus ASN-DROP – are one kind of
-*policy*: a source of networks (an ASN, a network, a VPN provider's servers in a country, a list) and an effect.
-Where networks of several policies overlap, the stronger effect wins for each address:
-
-**never blocked** (exemptions, VPN, self-protection, private ranges, active SSH sessions) **› at most captcha**
-(networks protected against bans) **› block › captcha**
-
-## Safeguards
-
-| | |
-|---|---|
-| **Validate before writing** | If a data source fails or returns invalid data, the run aborts and CrowdSec stays unchanged. |
-| **Sanity check** | If the number of ranges or the blocked IPv4 or IPv6 address space changes by more than 30 % (configurable) – e.g. after adding many ASNs or enabling IPv6 – the run stops and a dialog shows why. **Apply anyway** applies exactly the reviewed result; if the data changed meanwhile, the run stops again. Hard limits apply even to the first run: 150,000 ranges, 2^29 IPv4 addresses and 2^36 IPv6 /48 networks. |
-| **Implausible data is ignored** | Private and reserved ranges are never blocked; prefixes larger than /8 (IPv6 /16) are discarded. |
-| **No gaps** | New ranges are added before outdated ones are removed. |
-| **Decisions expire** | Decisions last 7 days (configurable) and are renewed by every run, so nothing lingers if asn-blocker is removed. |
-| **Own decisions only** | asn-blocker only changes decisions it created itself (reason `asn-blocker ban` / `asn-blocker captcha` and its own alert source). Decisions of other tools and CrowdSec's own detections are never touched. |
-| **Preview** | **Preview** shows exactly what a run would add and remove, without changing anything. |
-
-Every run, with its log and all changes, is kept under **Runs**; every configuration change is recorded under **Log**.
+Every run is kept with the ranges it added or removed and its log. Every configuration change is recorded under
+**Log**. Notifications for failed runs, stopped runs and affected watched IPs can go to ntfy, Gotify or a webhook
+([docs/notifications.md](docs/notifications.md)).
 
 ![A run with the added ranges and its log](docs/screenshots/run.png)
 
-## Operations
+The UI works on phones as well.
 
-### Settings
+<img src="docs/screenshots/phone.png" width="300" alt="The overview on a phone, with the tab bar at the bottom">
 
-Configured in the UI under **Settings → Schedule and safety**:
+## Safety
 
-| Setting | Default | |
-|---|---|---|
-| Update every | 48 h | How often ranges are refreshed (6 h – 14 days) |
-| Decision lifetime | 7 days | Lifetime of each decision; must be at least twice the interval |
-| Also block IPv6 prefixes | off | IPv4 only by default |
-| Sanity limit | 30 % | Maximum change before a run needs confirmation |
-| Spamhaus ASN-DROP | off | Include the list as *Block* or *Captcha* |
+- If a data source fails or returns something implausible, the run stops and CrowdSec stays unchanged.
+- If a run would change the number of ranges or the blocked address space by more than 30 %, it stops and asks
+  you first.
+- Private and reserved ranges are never blocked. Neither are your protected IPs or your active SSH sessions.
+- **Preview** shows exactly what a run would add and remove, without changing anything.
 
-Optional environment variables: `LOG_FORMAT=json` (structured logs, e.g. for Loki), `LOG_LEVEL=DEBUG`.
+More on lockout protection, the sanity check and how rules work together: [docs/rules.md](docs/rules.md).
 
-### Data and backup
-
-All state lives in the volume mounted at `/data` (a single SQLite database with rules, run history, audit log and
-CrowdSec credentials). Back up that volume, or use **Settings → Maintenance → Export configuration** for the rules and
-exemptions alone. The same page imports an export and offers the active ranges as plain text.
-
-### Updates
+## Updating and removing
 
 ```bash
 docker compose pull asn-blocker && docker compose up -d asn-blocker
 ```
 
-`:latest` is only published after the image passed a vulnerability scan, so automatic updaters such as Watchtower can
-follow it. To pin a version instead, use a release tag: `:0.7.1` (exact), `:0.7` (patch updates only) or the
-immutable `:sha-<commit>` tag every build gets. To keep Watchtower away from a pinned container, add the label
-`com.centurylinklabs.watchtower.enable=false`.
-Changes are listed in the [changelog](CHANGELOG.md).
+`:latest` is only published after the image passed a vulnerability scan. To pin a version, use a release tag such as
+`:0.7` or `:0.7.12`. All state is in the `/data` volume; back it up, or export the rules under
+**Settings → Maintenance**.
 
-### Command line
-
-```bash
-docker exec asn-blocker python -m app.cli reset-auth        # forgot the password: prints a new setup token
-docker exec asn-blocker python -m app.cli trust-proxy NAME  # proxy changed: trust it by container name, IP or CIDR
-docker exec asn-blocker python -m app.cli protect [IP] [--asn]  # protect an IP (and its ASN, see Lockout protection)
-docker exec asn-blocker python -m app.cli check-sources     # test all external data sources
-```
-
-### Removing decisions of other tools
-
-If you previously blocked networks with another script via `cscli`, you can remove those decisions by their reason
-under **Settings → Maintenance**. Only decisions added via `cscli` are affected; CrowdSec's own detections and
-blocklists are never touched.
-
-### Uninstalling
-
-Remove all rules and run **Apply** (the sanity check asks for confirmation with **Apply anyway**) to delete
-asn-blocker's decisions immediately – or simply remove the container; its decisions expire after the configured
-decision duration. Then delete the machine in CrowdSec:
+To remove asn-blocker, delete the container. Its decisions expire after their lifetime (7 days by default). To remove
+them at once, delete all rules and run **Apply** first. Then remove the machine in CrowdSec:
 `docker exec crowdsec cscli machines delete asn-blocker`.
 
 ## Troubleshooting
 
-| Problem | Solution |
+| Problem | Fix |
 |---|---|
 | No setup token in the log | Setup is already done. To start over: `docker exec asn-blocker python -m app.cli reset-auth` |
-| "No access" behind the proxy | The page shows the request's source address and the headers received. Source not trusted: `docker exec asn-blocker python -m app.cli trust-proxy <name shown>`. User header missing: check the proxy's SSO settings – see [Behind a reverse proxy](#behind-a-reverse-proxy-with-sso-recommended) |
-| "LAPI not reachable" | asn-blocker and CrowdSec must share a Docker network; use the container name in the URL (`http://crowdsec:8080`) |
-| "LAPI login failed" | Wrong machine ID or password; create new credentials with `cscli machines add` |
-| Run stopped by the sanity check | The dialog, the banner and the run under **Runs** show the reason; click **Apply anyway** if the change is expected |
-| Captcha has no effect | Your bouncer cannot show captchas (firewall bouncers can't) |
-| "Active SSH sessions: not available" | The session registry is not mounted – add `/run/systemd/sessions:/host/sessions:ro` and recreate the container with `docker compose up -d` |
-| Surfshark countries fail | Surfshark only publishes hostnames; the container needs working DNS |
-| Locked out via SSH | From the host console: `docker exec asn-blocker python -m app.cli protect <your-ip>`, then **Apply** – or remove the decision with `cscli decisions delete --ip <your-ip>` |
+| "No access" behind the proxy | The page shows where the request came from. Trust that proxy: `docker exec asn-blocker python -m app.cli trust-proxy <name>`. See [docs/access.md](docs/access.md). |
+| "LAPI not reachable" | asn-blocker and CrowdSec need a shared Docker network. Use the container name in the URL. |
+| "LAPI login failed" | Wrong machine ID or password. Create new credentials with `cscli machines add`. |
+| Captcha has no effect | Your bouncer cannot show captchas (firewall bouncers can't). |
+| Locked out via SSH | From the host console: `docker exec asn-blocker python -m app.cli protect <your-ip>`, then **Apply**. Or `cscli decisions delete --ip <your-ip>`. |
 
-## Security
+## More
 
-asn-blocker can change what your server blocks; treat access to it like access to CrowdSec itself. All signed-in users
-have full rights. See [SECURITY.md](SECURITY.md) for the threat model, the hardening built into the image and how to
-report vulnerabilities.
-
-**Network isolation:** asn-blocker only needs to reach the CrowdSec LAPI and to be reached by your proxy. If your
-proxy network also hosts other services (dashboards, identity provider, admin APIs), consider two dedicated networks
-instead – one shared with the proxy only and one shared with CrowdSec only:
-
-```bash
-docker network create asnb-proxy && docker network connect asnb-proxy <proxy-container>
-docker network create asnb-lapi  && docker network connect asnb-lapi crowdsec
-```
-
-Then attach asn-blocker to `asnb-proxy` and `asnb-lapi` (both `external: true`). Re-run the `connect` commands when
-those containers are recreated.
-
-**Legacy Docker socket mode:** if the LAPI cannot be reached, asn-blocker can instead run `cscli` in the CrowdSec
-container through the Docker socket (**Settings → CrowdSec connection**). This requires mounting
-`/var/run/docker.sock`, which gives anyone controlling the app root access to the host. Prefer the LAPI.
-
-## Development
-
-```bash
-pip install --require-hashes --no-deps -r requirements.txt && pip install -r requirements-dev.txt
-ruff check app tests && pytest -q
-DATA_DIR=./data uvicorn app.main:app --reload --port 8080
-```
-
-- Backend: FastAPI and SQLite (`app/`); frontend: Preact components written with htm, as plain ES modules without a
-  build step (`app/static/`).
-  - `app/api/` – HTTP routers, one per area; `app/store/` – data access, one module per area (each table has exactly
-    one owner, see `tests/test_architecture.py`); `app/engine.py` – computing and applying the desired state;
-    `app/sources.py` – external data; `app/crowdsec.py` – LAPI and Docker backends.
-  - Schema changes: append a step to `MIGRATIONS` in `app/db.py`; it runs once per database, in order.
-  - `app/static/js/` – the web UI: `lib.js` (rendering, text, formatting, API client, a small shared store),
-    `ui.js` (toasts, dialogs, tags), `shell.js` (navigation, tab bar, banners, apply bar), `icons.js` (line icons drawn
-    for the app), `views/` (one module per view),
-    `actions.js` (actions shared by several views), `palette.js` (⌘K). Preact and htm are vendored in
-    `app/static/vendor/` (see its README for versions, checksums and how to update).
-- UI tests (Playwright and axe in Chromium, against an offline demo server with fixed data):
-  `cd tests/ui && npm ci && npx playwright install chromium && npm test`. The same demo server is handy for
-  development: `python tests/ui/server.py /tmp/asnb-demo 8090`, sign in as `admin` / `correct-horse-battery`.
-  `npm run screenshots` recreates the screenshots in `docs/screenshots/` from it.
-- API contract: `tests/contract.json` records the routes and the structure of the read endpoints; record an intended
-  change with `UPDATE_CONTRACT=1 pytest tests/test_contract.py`.
-- Integration test against a real LAPI: set `CROWDSEC_LAPI_URL`, `CROWDSEC_MACHINE_ID` and `CROWDSEC_PASSWORD`, then
-  run `pytest tests/test_lapi_integration.py`. CI runs it against CrowdSec 1.8.1 on every push.
-- Dependencies: direct pins in `requirements.in`; `requirements.txt` is the hash-locked set, generated with
-  `uv pip compile requirements.in --universal --python-version 3.14 --generate-hashes -o requirements.txt`.
+- [docs/access.md](docs/access.md): reverse proxy and SSO, built-in login, SSH tunnel, network isolation
+- [docs/rules.md](docs/rules.md): lockout protection, VPN sources, Spamhaus ASN-DROP, how rules combine, safeguards
+- [docs/notifications.md](docs/notifications.md): ntfy, Gotify, webhooks
+- [docs/operations.md](docs/operations.md): settings, backup, versions, command line
+- [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
-[MIT](LICENSE). The bundled Geist fonts are © Vercel, licensed under the [SIL Open Font License](app/static/fonts/OFL-Geist.txt).
-The bundled [Preact](app/static/vendor/LICENSE-preact) (MIT) and [htm](app/static/vendor/LICENSE-htm) (Apache-2.0)
-keep their licenses.
+[MIT](LICENSE). Bundled: Geist fonts ([OFL](app/static/fonts/OFL-Geist.txt)), [Preact](app/static/vendor/LICENSE-preact)
+(MIT) and [htm](app/static/vendor/LICENSE-htm) (Apache-2.0).

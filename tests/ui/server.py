@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -32,13 +33,31 @@ NAMES = {  # (name, class, cc)
 }
 
 
+RESERVED_FIRST = (10, 100, 127, 169, 172, 192, 198, 203)
+
+
+def rich_prefixes(asn):
+    """For the README screenshots (ASNB_DEMO_RICH): as many prefixes as a real hosting network, clustered around one
+    region of the address space, so the map shows something."""
+    rnd = random.Random(asn)  # noqa: S311 – reproducible example data, not security
+    base, out = rnd.randrange(20, 200), []
+    for _ in range(40 + rnd.randrange(40)):
+        a = min(223, max(11, base + int(rnd.gauss(0, 7))))
+        if a in RESERVED_FIRST:
+            a += 1
+        out.append(f"{a}.{rnd.randrange(256)}.0.0/{rnd.choice((12, 13, 14, 15, 16, 16, 17, 18))}")
+    return sorted({str(ipaddress.ip_network(p, strict=False)) for p in out} | {f"2001:db8:{asn % 65536:x}::/48"})
+
+
 def fake_prefixes(asn, use_cache=True):
     """A few /16–/22 networks per ASN, spread over the public IPv4 space, plus one IPv6 prefix."""
+    if os.environ.get("ASNB_DEMO_RICH"):
+        return rich_prefixes(asn)
     h = hashlib.sha256(str(asn).encode()).digest()
     out = []
     for i in range(4 + h[0] % 8):
         a, b = 11 + (h[i + 1] * 7 + i * 13) % 180, h[i + 9]
-        if a in (100, 127, 169, 172, 192, 198, 203):
+        if a in RESERVED_FIRST[1:]:
             a += 1
         out.append(f"{a}.{b}.0.0/{16 + h[i + 17] % 7}")
     out.append(f"2001:db8:{asn % 65536:x}::/48")
@@ -97,6 +116,9 @@ def seed():
         db.put("lapi_machine_id", "asn-blocker", c)
         db.put("asn_names_updated", now, c)
         c.executemany("INSERT INTO asn_names VALUES(?,?,?,?)", [(a, *v) for a, v in NAMES.items()])
+    for asn in NAMES:  # what a real lookup leaves in the cache, so the rules table shows sizes
+        db.cache_put(f"prefixes:{asn}", fake_prefixes(asn))
+    with db.tx() as c:
         rules = [(64500, "ban", "scrapers", None), (64501, "ban", "", None), (64502, "captcha", "", now + 30 * 86400),
                  (64503, "captcha", "transit", None), (64506, "ban", "attacking network", now + 90 * 86400)]
         policies.upsert([{"source": "asn", "value": a, "effect": act, "name": NAMES[a][0], "note": note, "expires_at": exp}

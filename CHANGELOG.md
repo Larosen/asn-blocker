@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.13 (2026-10-30)
+- Shorter README: what is needed first (CrowdSec, a bouncer, Docker), installation and how it works; details moved
+  to `docs/`, development to `CONTRIBUTING.md`. New screenshots, including the Attackers view, the IP check and a phone
+- The tab bar on phones is nearly opaque, so text scrolling underneath no longer shows through
+- Overview: "One network keeps attacking" instead of "1 networks"
+
 ## 0.7.12 (2026-10-30)
 - **New navigation**: grouped by Monitor, Rules and System, with icons and counts; the current page is a raised key.
   At the top of the sidebar a status card shows the connection to CrowdSec and the next run; at the bottom the theme

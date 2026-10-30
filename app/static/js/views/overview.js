@@ -63,7 +63,8 @@ export function Overview() {
         <div class="legend" aria-hidden="true"><span><i class="l-ban"></i>${t("Blocked")}</span><span><i class="l-cap"></i>${t("Captcha")}</span><span><i class="l-free"></i>${t("Not blocked")}</span><span><i class="l-res"></i>${t("Reserved")}</span></div>
       <//>
     </section>
-    ${ov.attackers_recommended ? html`<div class="note warn row hint"><span>${t("{n} networks keep attacking this server – CrowdSec caught several of their IPs this week.", { n: ov.attackers_recommended })}</span>
+    ${ov.attackers_recommended ? html`<div class="note warn row hint"><span>${ov.attackers_recommended === 1 ? t("One network keeps attacking this server – CrowdSec caught several of its IPs this week.")
+      : t("{n} networks keep attacking this server – CrowdSec caught several of their IPs this week.", { n: ov.attackers_recommended })}</span>
       <span class="spacer"></span><a class="btn sm" href="#/attackers">${t("Review attackers")}</a></div>` : null}
     <div class="grid2">
       <div class="section"><div class="section-head"><h2>${t("Rules")}</h2></div><div class="box links">

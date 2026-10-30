@@ -55,7 +55,7 @@
   --blur: 24px; --blur-strong: 40px;
   /* ambient light: one faint accent glow at the top of the page, nothing else moves or shines */
   --ambient: radial-gradient(1000px 520px at 88% -12%, oklch(var(--l-accent) var(--accent-c) var(--accent-h) / 0.07), transparent 70%);
-  --glass-strong: oklch(var(--l-bg1) var(--base-c) var(--base-h) / calc(var(--glass-a) + 0.14));
+  --glass-strong: oklch(var(--l-bg1) var(--base-c) var(--base-h) / calc(var(--glass-a) + 0.22));  /* bars and dialogs: text behind must not compete */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1); --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --d-fast: 120ms; --d-base: 200ms; --d-panel: 320ms;
 }
@@ -426,7 +426,7 @@ a.link-row:hover .go { color: var(--text-1); transform: translateX(2px); }
   .cmdk-btn .lbl, .cmdk-btn kbd { display: none; }
   .tabbar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12;
     padding: 6px max(8px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
-    border-top: 1px solid var(--line); background: var(--glass-strong); -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(170%); backdrop-filter: blur(var(--blur-strong)) saturate(170%); }
+    border-top: 1px solid var(--line); background: color-mix(in oklch, var(--bg-1) 94%, transparent); -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(170%); backdrop-filter: blur(var(--blur-strong)) saturate(170%); }
   .tabbar a, .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; min-height: 50px; padding: 4px 2px;
     border: 0; border-radius: var(--r-md); background: none; color: var(--text-3); font: 500 10.5px/1.2 var(--sans); text-decoration: none; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .tabbar a > span:last-child, .tabbar button > span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
