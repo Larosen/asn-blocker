@@ -27,11 +27,11 @@ function Atlas({ runKey, children }) {
   }, [data]);
   const share = (n) => (n / 2 ** 32 * 100).toLocaleString(locale(), { maximumFractionDigits: n / 2 ** 32 < 0.001 ? 3 : 1 });
   const any = data && (data.ban.addresses || data.captcha.addresses);
-  // the frame carries the corner addresses; the stage itself is cleared and filled by the map
+  // the frame carries where the curve starts (top left) and ends (top right); the stage itself is cleared and filled by the map
   return html`<div class="atlas-frame"><div class="atlas-stage" id="atlas-stage" ref=${stage} role="img"
       aria-label=${data ? t("Map of the IPv4 address space: {p} % blocked, {c} % behind a captcha.", { p: share(data.ban.addresses), c: share(data.captcha.addresses) })
         : t("Map of the IPv4 address space, one cell per /16 network; loading")}></div>
-      <span class="tick tl mono" aria-hidden="true">0.0.0.0</span><span class="tick br mono" aria-hidden="true">255.255.255.255</span></div>
+      <span class="tick tl mono" aria-hidden="true">0.0.0.0</span><span class="tick tr mono" aria-hidden="true">255.255.255.255</span></div>
     <div class="atlas-side"><${AtlasText} data=${data} any=${any} share=${share} />${children}</div>`;
 }
 
