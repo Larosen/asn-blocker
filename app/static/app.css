@@ -371,9 +371,10 @@ dialog.sheet .nav a { min-height: 44px; }
 .atlas { display: grid; grid-template-columns: minmax(0, 440px) minmax(0, 1fr); gap: 36px; align-items: center; padding: 22px 26px 22px 22px; }
 .hero { background: radial-gradient(700px 360px at 100% 0%, oklch(var(--l-accent) var(--accent-c) var(--accent-h) / 0.06), transparent 70%), var(--bg-1); }
 :root[data-theme="oled"] .hero { background: var(--bg-1); }
-.atlas-frame { position: relative; padding: 18px 0; }
+.atlas-frame { position: relative; padding-top: 18px; }
 .tick { position: absolute; font-size: 10px; letter-spacing: 0.04em; color: var(--text-3); }
-.tick.tl { top: 0; left: 2px; } .tick.br { bottom: 0; right: 2px; }
+/* the Hilbert curve runs from 0.0.0.0 in the top left corner to 255.255.255.255 in the top right one */
+.tick.tl { top: 0; left: 2px; } .tick.tr { top: 0; right: 2px; }
 .atlas-stage { position: relative; aspect-ratio: 1; border-radius: var(--r-lg); overflow: hidden; background: var(--bg-0); border: 1px solid var(--line);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.03), 0 1px 0 var(--line); }
 .atlas canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }

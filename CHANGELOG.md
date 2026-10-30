@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14 (2026-10-30)
+- Overview: the map's end label (255.255.255.255) is at the top right, where the curve really ends, instead of the
+  bottom right
+
 ## 0.7.13 (2026-10-30)
 - Shorter README: what is needed first (CrowdSec, a bouncer, Docker), installation and how it works; details moved
   to `docs/`, development to `CONTRIBUTING.md`. New screenshots, including the Attackers view, the IP check and a phone
