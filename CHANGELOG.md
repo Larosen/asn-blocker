@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.15 (2026-11-14)
+- **Buttons show what they do**: while a change is being saved the button shows a spinner and keeps its size, a second
+  click or a held Enter is swallowed (one request, not two), and afterwards the button briefly turns green or red
+- **Clearer messages**: they stack (four at most), identical ones are not doubled, errors stay for 12 seconds, every message
+  has a close button, and one under the pointer or with focus stays until you are done reading. Warnings and notes have
+  their own colour
+- **Readable errors**: no connection, a timeout, "busy" (503) and "not reachable" (502/504) are said in plain words instead
+  of "Failed to fetch" or an HTML error page. Requests time out (30 s reading, 90 s changing); changes are never repeated
+  automatically
+- **Lists that load** show grey placeholders instead of a bare "Loading …"; if loading fails the page says why and offers
+  "Try again"
+- **Live updates** reconnect by themselves with a growing wait, also after the server refused the stream; after 10 seconds
+  without them a message says so, and another when they are back
+- **After an update** an open tab shows "asn-blocker was updated" with a Reload button instead of running the old version
+- A dialog's answer (for example "Apply") shows its progress on the button that opened the dialog
+
 ## 0.7.14 (2026-10-30)
 - Overview: the map's end label (255.255.255.255) is at the top right, where the curve really ends, instead of the
   bottom right

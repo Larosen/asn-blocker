@@ -3,7 +3,7 @@ import { coverage, mountAtlas } from "../../atlas.js";
 import { onThemeChange } from "../app-state.js";
 import { Icon } from "../icons.js";
 import { act, ago, api, fmtAddr, fmtNum, fmtTime, html, locale, runStatus, t, tx, useEffect, useLoad, useRef, useState, useStore } from "../lib.js";
-import { StatusTag } from "../ui.js";
+import { Pending, StatusTag } from "../ui.js";
 
 let atlasCache = null;  // the ranges only change with an applied run
 
@@ -47,8 +47,8 @@ function AtlasText({ data, any, share }) {
 
 export function Overview() {
   const ov = useStore((s) => s.ov);
-  const [watch] = useLoad(() => api("/watch"), [ov?.rev, ov?.last_apply?.id]);
-  if (!ov || !watch) return html`<p class="muted">${t("Loading …")}</p>`;
+  const [watch, reloadWatch, watchError] = useLoad(() => api("/watch"), [ov?.rev, ov?.last_apply?.id]);
+  if (!ov || !watch) return html`<${Pending} error=${watchError} retry=${reloadWatch} rows=${5} />`;
   const la = ov.last_apply;
   return html`<section class="section box atlas hero" aria-labelledby="atlas-h">
       <${Atlas} runKey=${la?.id ?? 0}>

@@ -2,6 +2,7 @@
 // updates from the server (Server-Sent Events), with polling only as the fallback while the stream is down.
 import { Icon } from "./icons.js";
 import { api, getState, html, setState, t, useStore } from "./lib.js";
+import { toast } from "./ui.js";
 
 // --- Theme: auto (follows the system), light, dark, or OLED (pure black) ---------------------------------------
 const THEMES = ["auto", "light", "dark", "oled"];
@@ -45,14 +46,37 @@ export async function refreshOverview() {
   pollTimer = setTimeout(refreshOverview, liveOk() ? 120000 : ov.running ? 2000 : 30000);
 }
 
+// The stream rebuilds itself: the browser retries a dropped connection, and after a refusal (503, a sign-in that ran out)
+// it stays closed, so this does it with a growing wait (3 s up to 30 s). After 10 s without it the user is told, and told again
+// when it is back; a server that now runs another version offers a reload.
+let retryTimer = null, noticeTimer = null, delay = 3000, lost = false;
+function liveLost() {
+  setState({ live: null });
+  if (!noticeTimer) noticeTimer = setTimeout(() => { lost = true; toast(t("Live updates interrupted – reconnecting …"), "warning"); }, 10000);
+  if (live?.readyState === EventSource.CLOSED && !retryTimer) {
+    retryTimer = setTimeout(() => { retryTimer = null; if (live) connectLive(); }, delay);
+    delay = Math.min(delay * 2, 30000);
+  }
+}
+function liveBack() {
+  clearTimeout(noticeTimer); noticeTimer = null; delay = 3000;
+  if (lost) { lost = false; toast(t("Live updates are back"), "success"); refreshOverview(); }
+}
 export function connectLive() {
   live?.close();
+  clearTimeout(retryTimer); retryTimer = null;
   live = new EventSource("/api/events");
   live.addEventListener("state", (e) => {
     const s = JSON.parse(e.data), before = getState().live;
+    liveBack();
+    if (s.version && getState().session?.version && s.version !== getState().session.version && !getState().stale) setState({ stale: true });
     setState({ live: { ...s, version: (before?.version || 0) + 1 } });
     if (!before || before.rev !== s.rev || before.applied_rev !== s.applied_rev || before.running !== s.running) refreshOverview();
   });
-  live.onerror = () => setState({ live: null });  // the browser reconnects by itself; until then the timers poll
+  live.onerror = liveLost;
 }
-export function stopLive() { live?.close(); live = null; clearTimeout(pollTimer); setState({ live: null, ov: null }); }
+export function stopLive() {
+  live?.close(); live = null; clearTimeout(pollTimer); clearTimeout(retryTimer); clearTimeout(noticeTimer);
+  retryTimer = noticeTimer = null; lost = false; delay = 3000;
+  setState({ live: null, ov: null });
+}

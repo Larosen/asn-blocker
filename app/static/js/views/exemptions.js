@@ -1,7 +1,7 @@
 // Exemptions: self-protection, exempt ASNs, exempt networks and watched IPs.
 import { refreshOverview } from "../app-state.js";
 import { api, html, t, useLoad } from "../lib.js";
-import { confirmDlg, guard, StatusTag, toast } from "../ui.js";
+import { confirmDlg, guard, Pending, StatusTag, toast } from "../ui.js";
 
 const modeName = (m) => (m === "captcha" ? t("at most captcha") : t("never blocked"));
 
@@ -24,8 +24,8 @@ function AddForm({ id, placeholder, label, note, onAdd, children }) {
 }
 
 export function Exemptions() {
-  const [d, reload] = useLoad(() => Promise.all([api("/exemptions"), api("/watch"), api("/protect")]));
-  if (!d) return html`<p class="muted">${t("Loading …")}</p>`;
+  const [d, reload, error] = useLoad(() => Promise.all([api("/exemptions"), api("/watch"), api("/protect")]));
+  if (!d) return html`<${Pending} error=${error} retry=${reload} />`;
   const [ex, watch, prot] = d;
   const re = () => { refreshOverview(); reload(); };
   const asns = ex.filter((e) => e.kind === "asn"), cidrs = ex.filter((e) => e.kind === "cidr");
