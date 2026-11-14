@@ -27,7 +27,7 @@ export async function start({ env = {} } = {}) {
     if (i > 150 || proc.exitCode !== null) throw new Error("demo server did not start");
     await new Promise((r) => setTimeout(r, 100));
   }
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const login = await browser.newContext();
   const res = await login.request.post(base + "/api/login", { headers: { "X-Requested-With": "asn-blocker" },
     data: { username: "admin", password: "correct-horse-battery" } });

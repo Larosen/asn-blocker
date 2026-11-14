@@ -2,7 +2,7 @@
 import { putRules } from "../actions.js";
 import { refreshOverview } from "../app-state.js";
 import { ago, api, fmtNum, html, t, tx, useEffect, useLoad, useRef, useState } from "../lib.js";
-import { confirmDlg, guard, toast } from "../ui.js";
+import { confirmDlg, guard, Pending, toast } from "../ui.js";
 
 const values = (form) => Object.fromEntries(new FormData(form));
 
@@ -155,8 +155,8 @@ function Password({ onChanged }) {
 }
 
 export function Settings() {
-  const [s, reload] = useLoad(() => api("/settings"));
-  if (!s) return html`<p class="muted">${t("Loading …")}</p>`;
+  const [s, reload, error] = useLoad(() => api("/settings"));
+  if (!s) return html`<${Pending} error=${error} retry=${reload} />`;
   // the forms are uncontrolled: a reload after saving re-creates them with the stored values
   const key = JSON.stringify([s.crowdsec_mode, s.lapi_url, s.interval_hours, s.decision_hours, s.sanity_percent, s.spamhaus_asndrop, s.include_ipv6, s.trusted_proxies, s.notify_url, s.notify_format, s.notify_token_set]);
   return html`<${CrowdSec} key=${"cs" + key} s=${s} reload=${reload} />

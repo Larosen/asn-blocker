@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from .. import db, engine, events
+from .. import VERSION, db, engine, events
 from .deps import require_user
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
@@ -18,7 +18,7 @@ MAX_AGE = 3600      # the browser reconnects by itself; long-lived streams do no
 def state():
     _, run = events.snapshot()
     return {"rev": db.get("config_rev"), "applied_rev": db.get("applied_rev"), "running": engine.is_running(),
-            "run": run or None}
+            "run": run or None, "version": VERSION}
 
 
 @router.get("/events")
