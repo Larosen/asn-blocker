@@ -2,7 +2,7 @@
 import { addAsnRule, expiresIn } from "../actions.js";
 import { refreshOverview } from "../app-state.js";
 import { act, ago, api, fmtNum, fmtTime, html, locale, t, useLoad, useState } from "../lib.js";
-import { ClassTag, confirmDlg, dialog, guard, toast } from "../ui.js";
+import { ClassTag, confirmDlg, dialog, guard, Pending, toast } from "../ui.js";
 
 let lastDays = 7, lastLife = "";  // kept while the app is open
 
@@ -35,7 +35,7 @@ function AutoRules({ auto, onSaved }) {
 
 export function Attackers() {
   const [days, setDays] = useState(lastDays), [life, setLife] = useState(lastLife);
-  const [r, reload] = useLoad(() => api(`/attackers?days=${days}`), [days]);
+  const [r, reload, loadError] = useLoad(() => api(`/attackers?days=${days}`), [days]);
   const pickDays = (d) => { lastDays = d; setDays(d); };
   const refresh = guard(async () => {
     const res = await api("/attackers/refresh", { method: "POST" });
@@ -53,7 +53,7 @@ export function Attackers() {
         ${ips.map((i) => html`<tr><td class="mono">${i.ip}</td><td class="num mono">${fmtNum(i.alerts)}</td><td class="small mono">${i.scenarios.map((sc) => sc.split("/").pop()).join(", ")}</td><td class="small">${ago(i.last_seen)}</td></tr>`)}</tbody></table></div>`,
       actions: [["cancel", t("Close"), "primary"]] });
   });
-  if (!r) return html`<p class="muted">${t("Loading …")}</p>`;
+  if (!r) return html`<${Pending} error=${loadError} retry=${reload} />`;
   const since = r.history_since ? new Date(r.history_since + "T00:00:00Z").toLocaleDateString(locale(), { dateStyle: "medium" }) : null;
   return html`<div class="section"><div class="section-head"><div>
       <p class="small muted">${t("Networks whose IPs CrowdSec's own detections caught on this server – community blocklists and manual decisions are not counted. A recommendation appears once a hosting network shows {n} or more attacking IPs; consumer networks are never recommended.", { n: 5 })}</p></div>

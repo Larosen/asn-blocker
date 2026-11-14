@@ -2,7 +2,7 @@
 import { addAsnRule, expiresIn, putRules } from "../actions.js";
 import { refreshOverview } from "../app-state.js";
 import { act, ago, api, fmtAddr, fmtNum, fmtTime, getState, html, t, tx, useEffect, useLoad, useRef, useState } from "../lib.js";
-import { ClassTag, confirmDlg, dialog, guard, SegAction, toast } from "../ui.js";
+import { ClassTag, confirmDlg, dialog, guard, Pending, SegAction, toast } from "../ui.js";
 
 const LIFETIMES = [["", "Permanent"], ["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["365", "1 year"]];
 const fields = (r) => ({ asn: r.asn, name: r.name, action: r.action, note: r.note, expires_at: r.expires_at ?? null });
@@ -65,11 +65,11 @@ function Search({ rules, reload }) {
 }
 
 export function Asns() {
-  const [rules, reload] = useLoad(() => api("/asns"));
+  const [rules, reload, loadError] = useLoad(() => api("/asns"));
   const [filter, setFilter] = useState(""), [selected, setSelected] = useState(() => new Set());
   const reloadAll = async () => { await reload(); refreshOverview(); };
   const save = async (rs) => { if (await putRules("/asns", rs.map(fields))) await reloadAll(); };
-  useEffect(() => { if (rules?.some((r) => !r.stats)) api("/asns/stats", { method: "POST" }).then(reload).catch(() => {}); }, [rules === undefined]);
+  useEffect(() => { if (rules?.some((r) => !r.stats)) api("/asns/stats", { method: "POST", button: false }).then(reload).catch(() => {}); }, [rules === undefined]);
 
   // Review a list of rules before importing it (paste and suggestions)
   const reviewImport = async (preview, { title, note = null, chooseAction = false } = {}) => {
@@ -84,7 +84,7 @@ export function Asns() {
     if (!(await putRules("/asns", preview))) return;
     toast(t("{n} ASNs imported", { n: preview.length }));
     await reloadAll();
-    api("/asns/stats", { method: "POST" }).then(reload).catch(() => {});
+    api("/asns/stats", { method: "POST", button: false }).then(reload).catch(() => {});
   };
 
   // Paste a list: one ASN per line, optional comment
@@ -141,7 +141,7 @@ export function Asns() {
     return () => window.removeEventListener("asnb-request", take);
   }, [rules === undefined]);
 
-  if (!rules) return html`<p class="muted">${t("Loading …")}</p>`;
+  if (!rules) return html`<${Pending} error=${loadError} retry=${reload} />`;
   const f = filter.toLowerCase();
   const visible = rules.filter((r) => !f || `as${r.asn} ${r.name} ${r.note}`.toLowerCase().includes(f));
   const sel = new Set([...selected].filter((a) => rules.some((r) => r.asn === a)));
