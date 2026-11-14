@@ -1,5 +1,6 @@
 // Log: who changed what, and when.
 import { api, fmtTime, html, t, useLoad } from "../lib.js";
+import { Pending } from "../ui.js";
 
 const auditName = (a) => ({ "asn.put": t("ASN rule saved"), "asn.delete": t("ASN rule removed"), "vpn.put": t("VPN exemptions changed"),
   "exemption.add": t("Exemption added"), "exemption.delete": t("Exemption removed"), "watch.add": t("Watched IP added"),
@@ -19,8 +20,8 @@ function detail(d) {
 }
 
 export function Audit() {
-  const [rows] = useLoad(() => api("/audit"));
-  if (!rows) return html`<p class="muted">${t("Loading …")}</p>`;
+  const [rows, reload, error] = useLoad(() => api("/audit"));
+  if (!rows) return html`<${Pending} error=${error} retry=${reload} />`;
   return html`<div class="box table-wrap">${rows.length ? html`<table><thead><tr><th>${t("Time")}</th><th>${t("User")}</th><th>${t("Action")}</th><th>${t("Details")}</th></tr></thead><tbody>
     ${rows.map((r) => html`<tr key=${r.id}><td class="mono small">${fmtTime(r.ts)}</td><td>${r.user}</td><td>${auditName(r.action)}</td><td class="mono small muted">${detail(r.detail)}</td></tr>`)}</tbody></table>`
     : html`<div class="empty">${t("No entries yet.")}</div>`}</div>`;
