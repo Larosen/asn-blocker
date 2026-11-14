@@ -338,6 +338,15 @@ dialog .df { padding: 12px 16px; border-top: 1px solid var(--line); display: fle
   display: flex; gap: 10px; align-items: baseline; animation: rise var(--d-base) var(--ease-out) both; }
 .toast::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); transform: translateY(-1px); }
 .toast.error::before { background: var(--ban); box-shadow: 0 0 0 3px var(--ban-bg); }
+.toast.warning::before { background: var(--cap); box-shadow: 0 0 0 3px var(--cap-bg); }
+.toast.info::before { background: var(--info); box-shadow: 0 0 0 3px var(--accent-glow); }
+.toast { align-items: flex-start; }
+.toast::before { margin-top: 7px; }
+.toast-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-x { flex: none; width: 24px; height: 24px; margin: -2px -8px -2px 0; display: inline-grid; place-items: center; border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--text-3); cursor: pointer; }
+.toast-x:hover, .toast-x:focus-visible { color: var(--text-1); background: var(--bg-3); }
+.toast-x svg { width: 14px; height: 14px; }
 
 #cmdk { width: min(640px, calc(100vw - 24px)); margin-top: 12vh; }
 .cmdk-input { display: flex; align-items: center; gap: 12px; padding: 4px 16px 4px 18px; border-bottom: 1px solid var(--line); color: var(--text-3); }
@@ -509,3 +518,31 @@ h3.inline-h { margin: 0; }
 /* Attackers: automatic rules */
 #att-auto { margin-bottom: 16px; }
 #att-auto h2 { margin: 0 0 12px; }
+
+/* --- Feedback: a button whose action runs, lists that load, a failed load --- */
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn.is-busy, .icon-btn.is-busy, button.is-busy { cursor: progress; position: relative; }
+.btn.is-busy:active { transform: none; }
+.btn.is-busy { color: transparent !important; }   /* the label keeps its place (same size); the spinner sits on top */
+.btn.is-busy::before { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--text-2); border-right-color: transparent; animation: spin .7s linear infinite; }
+.btn.primary.is-busy::before { border-color: var(--bg-0); border-right-color: transparent; }
+.btn.danger.is-busy::before { border-color: var(--ban); border-right-color: transparent; }
+.icon-btn.is-busy > svg { visibility: hidden; }
+.icon-btn.is-busy::before { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
+.did-work { box-shadow: 0 0 0 2px color-mix(in oklch, var(--ok), transparent 45%); transition: box-shadow var(--d-base); }
+.did-fail { box-shadow: 0 0 0 2px color-mix(in oklch, var(--ban), transparent 40%); animation: nudge .3s; }
+@keyframes nudge { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+.skeleton-list { display: flex; flex-direction: column; gap: 10px; }
+.skeleton { display: flex; flex-direction: column; gap: 8px; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-1); }
+.sk-line { height: 10px; border-radius: 5px; background: var(--bg-3); background-image: linear-gradient(90deg, transparent, var(--bg-1), transparent);
+  background-size: 200% 100%; background-repeat: no-repeat; animation: shimmer 1.4s ease-in-out infinite; }
+.sk-line.short { width: 55%; }
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: var(--r-md);
+  background: var(--ban-bg); color: var(--ban); border: 1px solid color-mix(in oklch, var(--ban), transparent 70%); }
+[aria-busy="true"]:not(button):not(.btn) { cursor: progress; }
+.banner .btn { flex: none; margin-left: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .btn.is-busy::before, .icon-btn.is-busy::before { animation-duration: 2s !important; animation-iteration-count: infinite !important; }  /* the one sign that something runs */
+  .sk-line, .did-fail { animation: none !important; }
+}
