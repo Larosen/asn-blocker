@@ -74,9 +74,11 @@ function openMore(signOut) {
 }
 
 function Banners() {
-  const ov = useStore((s) => s.ov);
-  if (!ov) return null;
-  const la = ov.last_apply, b = [];
+  const ov = useStore((s) => s.ov), stale = useStore((s) => s.stale);
+  const b = [];
+  if (stale) b.push(html`<div class="banner warn" role="status"><span class="dot warn"></span><span>${t("asn-blocker was updated – reload the page to use the new version.")}</span><button type="button" class="btn sm primary" onClick=${() => location.reload()}>${t("Reload")}</button></div>`);
+  if (!ov) return b.length ? b : null;
+  const la = ov.last_apply;
   const exemptMe = guard(async () => {
     await api("/exemptions", { method: "POST", body: { kind: "cidr", value: ov.me.ip, note: t("own IP") } });
     toast(t("Your IP was saved as an exemption. Apply to make it effective."));
