@@ -1,7 +1,7 @@
 // VPN exemptions: per provider, the countries whose servers stay reachable.
 import { refreshOverview } from "../app-state.js";
 import { api, continentName, CONTINENTS, html, locale, t, tx, useLoad, useState } from "../lib.js";
-import { guard, toast } from "../ui.js";
+import { guard, Pending, toast } from "../ui.js";
 
 function Countries({ p, countries, chosen, setChosen }) {
   const [filter, setFilter] = useState("");
@@ -28,11 +28,11 @@ function Countries({ p, countries, chosen, setChosen }) {
 }
 
 export function Vpn({ arg }) {
-  const [provs] = useLoad(() => api("/vpn/providers"));
+  const [provs, reloadProvs, provsError] = useLoad(() => api("/vpn/providers"));
   const p0 = provs && (provs.find((x) => x.id === arg) || provs[0]);
   const [countries, , error] = useLoad(() => (p0 ? api(`/vpn/${p0.id}/countries`) : Promise.resolve(null)), [p0?.id]);
   const [mode, setMode] = useState(null), [chosen, setChosen] = useState(null);
-  if (!provs) return html`<p class="muted">${t("Loading …")}</p>`;
+  if (!provs) return html`<${Pending} error=${provsError} retry=${reloadProvs} />`;
   const p = { ...p0, mode: mode ?? p0.mode };
   const sel = chosen ?? new Set(p0.countries);
   const exitAsn = guard(async () => {
