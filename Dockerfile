@@ -4,6 +4,9 @@ FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916
 # No user site-packages: nothing written to the data volume can ever be imported as code
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 HOME=/tmp \
     PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+# Debian security fixes that the base image does not carry yet (a no-op once it does)
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+ && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps
 COPY requirements.txt /tmp/
