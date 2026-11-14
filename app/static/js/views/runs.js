@@ -2,7 +2,7 @@
 import { reviewStopped, startRun } from "../actions.js";
 import { liveOk } from "../app-state.js";
 import { ago, api, fmtTime, html, kindName, runStatus, stopReasons, t, useEffect, useLayoutEffect, useLoad, useRef, useStore } from "../lib.js";
-import { StatusTag } from "../ui.js";
+import { Pending, StatusTag } from "../ui.js";
 
 function Log({ text }) {
   const pre = useRef(null), atEnd = useRef(true);
@@ -29,7 +29,7 @@ function Detail({ r, lastApplyId }) {
 
 export function Runs({ arg }) {
   const live = useStore((s) => s.live), lastApplyId = useStore((s) => s.ov?.last_apply?.id);
-  const [runs, reloadRuns] = useLoad(() => api("/runs"));
+  const [runs, reloadRuns, runsError] = useLoad(() => api("/runs"));
   const sel = arg ? Number(arg) : runs?.[0]?.id;
   const [r, reloadRun] = useLoad(() => (sel ? api("/runs/" + sel) : Promise.resolve(null)), [sel]);
   const running = runs?.some((x) => x.status === "running") || r?.status === "running";
@@ -41,7 +41,7 @@ export function Runs({ arg }) {
     const timer = setTimeout(() => { throttle.current = Date.now(); reloadRuns(); reloadRun(); }, wait);
     return () => clearTimeout(timer);
   }, [live?.version, running, viaLive ? null : runs, viaLive ? null : r]);  // with the stream: only on news
-  if (!runs) return html`<p class="muted">${t("Loading …")}</p>`;
+  if (!runs) return html`<${Pending} error=${runsError} retry=${reloadRuns} />`;
   return html`<div class="section"><div class="section-head"><div><p class="small muted">${t("A run recomputes the ranges and syncs them with CrowdSec. “Preview” changes nothing.")}</p></div>
       <div class="row"><button class="btn" data-run="plan" onClick=${() => startRun("plan")}>${t("Preview")}</button><button class="btn primary" data-run="apply" onClick=${() => startRun("apply")}>${t("Apply now")}</button></div></div>
     <div class="box table-wrap">${runs.length ? html`<table><thead><tr><th>#</th><th>${t("Type")}</th><th>${t("Status")}</th><th>${t("Started")}</th><th class="hide-sm">${t("By")}</th>
