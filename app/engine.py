@@ -274,8 +274,10 @@ _preview_lock = threading.Lock()
 
 
 def preview():
-    """Quick preview for the apply bar: desired state (from caches) vs. last applied state."""
-    rev = db.get("config_rev")
+    """Quick preview for the apply bar: desired state (from caches) vs. last applied state. Recomputed when the rules,
+    the routing table or the applied state (a run) changed."""
+    last = runs.last_apply(finished=True)
+    rev = (db.get("config_rev"), db.get("routes_updated"), last["id"] if last else None)
     if _preview["rev"] == rev:
         return _preview["result"]
     if not _preview_lock.acquire(blocking=False):
@@ -285,7 +287,7 @@ def preview():
             desired, _ = build(lambda _msg: None, fresh=False)
         except sources.SourceError as e:
             return {"error": str(e)}
-        result = {"rev": rev}
+        result = {"rev": rev[0]}
         for t in REASONS:
             applied = set(runs.applied_values(t))
             want = set(desired[t])

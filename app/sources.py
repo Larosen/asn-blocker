@@ -206,6 +206,9 @@ def asn_prefixes(asn, use_cache=True):
 def prefixes_many(asns, use_cache=True):
     """From the local routing table, or in parallel from RIPEstat (at most 4 concurrent requests)."""
     asns = list(asns)
+    local = routing.prefixes_many(asns)
+    if local is not None:
+        return {a: local[int(a)] for a in asns}
     with ThreadPoolExecutor(4) as ex:
         return dict(zip(asns, ex.map(lambda a: asn_prefixes(a, use_cache), asns), strict=True))
 

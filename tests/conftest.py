@@ -13,6 +13,9 @@ def fresh_db(monkeypatch, tmp_path):
     auth._failed.clear()
     from app import notify
     notify._tested.clear()
+    from app import attackers, engine
+    attackers._recommended.update(key=None, n=0)  # in-process caches must not leak from one test's database into the next
+    engine._preview.update(rev=None, result=None)
 
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_FILE", tmp_path / "t.db")

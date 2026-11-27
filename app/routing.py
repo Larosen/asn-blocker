@@ -81,6 +81,21 @@ def prefixes(asn):
     return sorted(r[0] for r in c.execute("SELECT prefix FROM routes WHERE asn=?", (int(asn),)))
 
 
+def prefixes_many(asns):
+    """{asn: [prefixes]} for many ASNs in one pass over the table, or None without a usable table. Much faster than
+    prefixes() per ASN for long lists such as Spamhaus ASN-DROP."""
+    c = _conn() if fresh() else None
+    if c is None:
+        return None
+    out = {int(a): [] for a in asns}
+    keys = list(out)
+    for i in range(0, len(keys), 500):  # stays below SQLite's limit of bound parameters
+        chunk = keys[i:i + 500]
+        for prefix, asn in c.execute(f"SELECT prefix, asn FROM routes WHERE asn IN ({','.join('?' * len(chunk))})", chunk):  # noqa: S608
+            out[asn].append(prefix)
+    return {a: sorted(p) for a, p in out.items()}
+
+
 def lookup(ip):
     """{'asns': [...], 'prefix': most specific announced prefix} for an IP, or None without a usable table."""
     c = _conn() if fresh() else None

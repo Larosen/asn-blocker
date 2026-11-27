@@ -124,3 +124,11 @@ def test_scheduler_refreshes_daily_and_retries_hourly(monkeypatch):
     assert not routing.due()
     now[0] += 2 * 3600
     assert routing.due()
+
+
+def test_prefixes_many_matches_prefixes_per_asn(jsonl):
+    asns = [24940, 64999, 64998, 64997, 12345]
+    assert routing.prefixes_many(asns) is None  # no table yet: the caller falls back to RIPEstat
+    load(jsonl)
+    assert routing.prefixes_many(asns) == {a: routing.prefixes(a) for a in asns}
+    assert routing.prefixes_many([*range(1, 1200), 24940])[24940] == ["2a01:4f8::/32", "5.9.0.0/16"]  # more than one chunk

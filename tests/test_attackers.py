@@ -161,3 +161,18 @@ def test_automatic_rules_are_limited_per_collection(monkeypatch):
     assert len(attackers.auto_rules()) == 2
     assert len(attackers.auto_rules()) == 2
     assert len(rules.actions()) == 4
+
+
+def test_recommended_count_is_cached_until_something_changes(monkeypatch):
+    calls = []
+    real = attackers.report
+
+    def counting(days=7, limit=100):
+        calls.append(days)
+        return real(days, limit)
+    monkeypatch.setattr(attackers, "report", counting)
+    n = attackers.recommended_count()
+    assert attackers.recommended_count() == n and len(calls) == 1
+    db.put("attackers_updated", 12345.0)  # a new collection
+    attackers.recommended_count()
+    assert len(calls) == 2

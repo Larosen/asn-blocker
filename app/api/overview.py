@@ -32,7 +32,7 @@ def overview(request: Request, user: str = Depends(require_user)):
         "last_apply": runs.last_apply(),
         "crowdsec_mode": db.get("crowdsec_mode"), "interval_hours": db.get("interval_hours"),
         "asn_names": sources.asn_count(),
-        "attackers_recommended": attackers.report(7)["recommended"],
+        "attackers_recommended": attackers.recommended_count(),
         "untrusted_proxy": auth.untrusted_proxy(request) if db.get("auth_mode") == "local" else None,
         "broad_proxies": auth.broad_trusted_proxies(),
     }
