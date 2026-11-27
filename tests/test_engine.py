@@ -389,3 +389,10 @@ def test_check_ip_points_to_neighbouring_vpn_servers(env, monkeypatch):
     assert r["status"] == "ban"
     assert r["vpn_near"] == [{"provider": "nordvpn", "name": "NordVPN", "country": "NO", "selected": False, "mode": "exact"}]
     assert engine.check_ip("11.0.9.9")["vpn_near"] == []
+
+
+def test_preview_follows_a_run_without_a_rule_change(env):
+    """A run (e.g. the scheduler with a new routing table) changes the applied state but not config_rev."""
+    assert engine.preview()["ban"]["add"] > 0
+    engine.run("apply", "test")
+    assert engine.preview()["ban"]["add"] == 0

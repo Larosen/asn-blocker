@@ -6,13 +6,14 @@ import time
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from .. import VERSION, db, engine, events
+from .. import VERSION, auth, db, engine, events
 from .deps import require_user
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
 TICK = 0.5          # how often the stream looks for changes (no thread per client: a cheap version check)
 KEEPALIVE = 15      # a comment line now and then keeps proxies from closing an idle stream
-MAX_AGE = 3600      # the browser reconnects by itself; long-lived streams do not outlive a sign-out for long
+MAX_AGE = 3600      # the browser reconnects by itself
+RECHECK = 30        # the session is checked again this often: a sign-out or password change ends the stream
 
 
 def state():
@@ -26,7 +27,12 @@ async def stream(request: Request):
     async def gen():
         yield "retry: 3000\n\n"
         sent, last, started = None, time.monotonic(), time.monotonic()
+        checked = started
         while time.monotonic() - started < MAX_AGE and not await request.is_disconnected():
+            if time.monotonic() - checked > RECHECK:
+                checked = time.monotonic()
+                if not await asyncio.to_thread(auth.current_user, request):
+                    return
             version, _ = events.snapshot()
             if version != sent:
                 sent, last = version, time.monotonic()

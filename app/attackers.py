@@ -266,6 +266,18 @@ def report(days=7, limit=100):
             "error": db.get("attackers_error"), "recommended": sum(r["recommendation"]["kind"] == "recommend" for r in out)}
 
 
+_recommended = {"key": None, "n": 0}
+
+
+def recommended_count():
+    """report(7)["recommended"] for the overview, which loads often: only recomputed when the history (a collection),
+    the rules (config_rev) or the day changed."""
+    key = (db.get("attackers_updated"), db.get("config_rev"), time.strftime("%Y-%m-%d", time.gmtime()))
+    if _recommended["key"] != key:
+        _recommended.update(key=key, n=report(7)["recommended"])
+    return _recommended["n"]
+
+
 def ips_of(asn, days=7):
     days = days if days in WINDOWS else 7
     rows = db.q("SELECT ip, sum(alerts) alerts, max(last_seen) last_seen, group_concat(scenarios, '|') sc FROM attack_ips "

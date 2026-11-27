@@ -22,6 +22,10 @@ NON_PUBLIC = [ipaddress.ip_network(n) for n in (
     "::/8", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8")]
 # Shorter prefixes are never announced by a single real ASN
 MIN_PREFIXLEN = {4: 8, 6: 16}
+# VPN server lists come from the providers or from third parties (gluetun, ProtonVPN-IPs). Far more exempted space
+# than any real provider has (NordVPN as networks: ~4 M IPv4 addresses) means a broken or manipulated list: the run
+# stops instead of unblocking it. IPv4 in addresses, IPv6 in /64 networks.
+MAX_VPN_EXEMPT = {4: 2**24, 6: 2**24}
 RANK = policies.RANK
 
 
@@ -66,6 +70,17 @@ def _vpn_networks(provider, cc, widen):
     return prov, out
 
 
+def vpn_space(nets):
+    """Raises SourceError if the VPN exemptions cover implausibly much address space (see MAX_VPN_EXEMPT)."""
+    nets = netset.collapse(list(nets))
+    size = {4: sum(n.num_addresses for n in nets if n.version == 4),
+            6: sum(max(1, n.num_addresses >> 64) for n in nets if n.version == 6)}
+    for v, unit in ((4, "IPv4 addresses"), (6, "IPv6 /64 networks")):
+        if size[v] > MAX_VPN_EXEMPT[v]:
+            raise sources.SourceError(f"VPN exemptions would cover {size[v]:,} {unit} (limit {MAX_VPN_EXEMPT[v]:,}) – "
+                                      "a server list looks broken or manipulated; run stopped, CrowdSec unchanged")
+
+
 def evaluate(log, fresh=True):
     """Returns ({'ban': [cidr], 'captcha': [cidr]}, [(cidr, label)] of everything exempted)."""
     ipv6 = db.get("include_ipv6")
@@ -90,6 +105,8 @@ def evaluate(log, fresh=True):
             prov, nets = _vpn_networks(provider, cc, widen)
             exempt += [(n, f"VPN {prov.name} {cc}") for n in nets]
             log(f"  {prov.name} {cc}: {len(nets)} server IPs" + (" (as network)" if widen else ""))
+
+    vpn_space(n for n, label in exempt if label.startswith("VPN "))
 
     ex_asns = sorted(int(p["value"]) for p in by[("asn", "allow", False)])
     for asn, pfx in sources.prefixes_many(ex_asns, use_cache=not fresh).items():

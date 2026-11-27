@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -282,7 +283,7 @@ def test_ntfy_request_and_test_errors(client, monkeypatch):
         sent.append((url, kw))
         return R()
 
-    monkeypatch.setattr(notify.httpx, "post", post)
+    monkeypatch.setattr(notify, "_post", post)
     db.put("notify_url", "https://ntfy.example/alerts")
     db.put("notify_format", "ntfy")
     db.put("notify_token", "tk_abc")
@@ -452,7 +453,7 @@ def test_notify_send_never_raises_into_runs(monkeypatch):
 
     def boom(*a, **k):
         raise UnicodeEncodeError("ascii", "ü", 0, 1, "x")
-    monkeypatch.setattr(notify.httpx, "post", boom)
+    monkeypatch.setattr(notify, "_post", boom)
     monkeypatch.setattr(notify, "check_target", lambda url: None)
     notify.send("t", "m")            # must not raise
 
@@ -638,3 +639,49 @@ def test_long_multibyte_password_still_verifies():
     pw = "ä" * 1024
     stored = auth.hash_password(pw)
     assert auth.verify_password(pw, stored) and not auth.verify_password(pw[:-1], stored)
+
+
+def test_notifications_go_to_the_checked_address(monkeypatch):
+    """DNS rebinding: the name is resolved once; the connection goes to exactly that checked IP, with the original
+    Host header and TLS name. A name that (also) resolves to a link-local address is refused before connecting."""
+    import httpx
+
+    from app import notify
+    answers = {"ntfy.example": ["10.0.0.7"], "evil.example": ["10.0.0.8", "169.254.169.254"]}
+    monkeypatch.setattr(notify.socket, "getaddrinfo",
+                        lambda host, port: [(0, 0, 0, "", (a, 0)) for a in answers.get(host, [])])
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200)
+    real = httpx.Client
+    monkeypatch.setattr(notify.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert notify._post("https://ntfy.example:8443/alerts", content=b"x").status_code == 200
+    r = seen[-1]
+    assert r.url.host == "10.0.0.7" and r.url.port == 8443 and r.url.path == "/alerts"
+    assert r.headers["host"] == "ntfy.example:8443" and r.extensions["sni_hostname"] == "ntfy.example"
+    for url in ("https://evil.example/x", "https://unknown.example/x"):
+        with pytest.raises(notify.NotifyError):
+            notify._post(url, content=b"x")
+    assert len(seen) == 1
+
+
+def test_live_updates_end_after_sign_out(client, monkeypatch):
+    from app import auth
+    from app.api import events as live
+    setup_local(client)
+    monkeypatch.setattr(live, "MAX_AGE", 30)
+    monkeypatch.setattr(live, "TICK", 0.05)
+    monkeypatch.setattr(live, "RECHECK", 0.2)
+    calls = []
+
+    def signed_out(request):
+        calls.append(1)
+        return None
+    with client.stream("GET", "/api/events") as r:
+        assert r.status_code == 200
+        monkeypatch.setattr(auth, "current_user", signed_out)  # e.g. the session was dropped by a password change
+        started = time.monotonic()
+        "".join(r.iter_text())  # the stream ends by itself, long before MAX_AGE
+    assert calls and time.monotonic() - started < 10

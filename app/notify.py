@@ -55,19 +55,45 @@ def _origin(url):
     return u.scheme, (u.host or "").lower().rstrip("."), u.port or {"http": 80, "https": 443}.get(u.scheme)
 
 
+def _addresses(host):
+    """Resolved addresses of a host; NotifyError if one of them is a forbidden target."""
+    addrs = []
+    for i in socket.getaddrinfo(host, None):
+        ip = ipaddress.ip_address(i[4][0].split("%")[0])
+        if ip.is_link_local or (ip.version == 6 and ip.ipv4_mapped and ip.ipv4_mapped.is_link_local) \
+                or ip.is_multicast or ip.is_unspecified:
+            raise NotifyError(f"{host} resolves to {ip}, which is not allowed as a notification target")
+        if ip not in addrs:
+            addrs.append(ip)
+    return addrs
+
+
 def check_target(url):
     """Notifications may go to internal services (e.g. http://ntfy:80), but never to link-local addresses such as
     cloud metadata endpoints."""
     try:
-        host = httpx.URL(url).host
-        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+        _addresses(httpx.URL(url).host)
     except (OSError, UnicodeError, httpx.InvalidURL):
         return  # unresolvable: the request itself will fail with a clear error
-    for a in addrs:
-        ip = ipaddress.ip_address(a.split("%")[0])
-        if ip.is_link_local or (ip.version == 6 and ip.ipv4_mapped and ip.ipv4_mapped.is_link_local) \
-                or ip.is_multicast or ip.is_unspecified:
-            raise NotifyError(f"{host} resolves to {ip}, which is not allowed as a notification target")
+
+
+def _post(url, **kw):
+    """POST to the address that was checked, not to whatever the name resolves to a moment later: the host name is
+    resolved once, checked, and the connection goes to that IP (Host header and TLS name stay the original host), so
+    a DNS answer that changes in between (DNS rebinding) cannot redirect a notification to a forbidden address."""
+    u = httpx.URL(url)
+    try:
+        addrs = _addresses(u.host)
+    except (OSError, UnicodeError) as e:
+        raise NotifyError(f"{u.host} cannot be resolved") from e
+    if not addrs:
+        raise NotifyError(f"{u.host} cannot be resolved")
+    ip = addrs[0]
+    pinned = u.copy_with(host=str(ip))
+    headers = {**kw.pop("headers", {}), "Host": u.netloc.decode("ascii").rpartition("@")[2]}
+    ext = {"sni_hostname": u.host} if u.scheme == "https" else {}
+    with httpx.Client(timeout=kw.pop("timeout", 15), follow_redirects=False) as client:
+        return client.post(pinned, headers=headers, extensions=ext, **kw)
 
 
 def mask(url):
@@ -107,25 +133,24 @@ def send(title, message, level="error", run_id=None, raise_errors=False, cfg=Non
     click = link(run_id, base, page)
     headers = {"User-Agent": USER_AGENT}
     try:
-        check_target(url)
         if fmt == "ntfy":
             headers |= {"Title": title, "Priority": prio, "Tags": f"{tags},shield"}
             if click:
                 headers["Click"] = click
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            r = httpx.post(url, content=message.encode(), headers=headers, timeout=15)
+            r = _post(url, content=message.encode(), headers=headers, timeout=15)
         elif fmt == "gotify":
             if token:
                 headers["X-Gotify-Key"] = token
             body = {"title": title, "message": message, "priority": gotify_prio}
             if click:
                 body["extras"] = {"client::notification": {"click": {"url": click}}}
-            r = httpx.post(url, json=body, headers=headers, timeout=15)
+            r = _post(url, json=body, headers=headers, timeout=15)
         else:
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            r = httpx.post(url, json={"title": title, "message": message, "level": level, "source": "asn-blocker",
+            r = _post(url, json={"title": title, "message": message, "level": level, "source": "asn-blocker",
                                       "url": click}, headers=headers, timeout=15)
         if r.status_code >= 300:
             hint = " – check the access token and the topic's permissions" if r.status_code in (401, 403) else ""

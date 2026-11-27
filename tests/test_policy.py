@@ -108,3 +108,19 @@ def test_an_explicit_rule_overrides_the_list_in_evaluation_and_explanation():
     ranges, _ = engine.build(lambda _m: None)
     assert engine.status_of("11.9.0.1", ranges) == "captcha"
     assert why("11.9.0.1")[0] == "captcha"
+
+
+def test_implausibly_large_vpn_exemptions_stop_the_run(monkeypatch):
+    """A broken or manipulated server list must not unblock large parts of the internet."""
+    class Huge(sources.Provider):
+        id, name = "nordvpn", "NordVPN"
+
+        def fetch(self):
+            return [("DE", "Germany", f"{a}.{b}.0.1") for a in range(20, 30) for b in range(256)]  # 2,560 /24s ...
+    monkeypatch.setitem(sources.PROVIDERS, "nordvpn", Huge())
+    vpn.add([("nordvpn", "DE")], {"nordvpn": "net"})
+    monkeypatch.setattr(policy, "MAX_VPN_EXEMPT", {4: 2**19, 6: 2**24})  # ... over a (lowered) limit of 2,048 /24s
+    with pytest.raises(sources.SourceError, match="VPN exemptions"):
+        engine.build(lambda _m: None)
+    monkeypatch.setattr(policy, "MAX_VPN_EXEMPT", {4: 2**24, 6: 2**24})
+    engine.build(lambda _m: None)
