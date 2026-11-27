@@ -5,6 +5,7 @@
   "automergeType": "pr",
   "automergeStrategy": "merge-commit",
   "platformAutomerge": false,
+  "ignorePaths": ["**/node_modules/**"],
   "pip-compile": {
     "managerFilePatterns": ["/(^|/)requirements\\.txt$/"]
   },
