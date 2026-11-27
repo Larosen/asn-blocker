@@ -1,6 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ]
+  "extends": ["config:recommended"],
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "merge",
+  "platformAutomerge": false,
+  "pip-compile": {
+    "managerFilePatterns": ["/(^|/)requirements\\.txt$/"]
+  },
+  "packageRules": [
+    {
+      "description": "requirements.txt is a uv lock file: update requirements.in and recompile it via pip-compile instead of editing it directly",
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["requirements.txt"],
+      "enabled": false
+    }
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true
+  }
 }
