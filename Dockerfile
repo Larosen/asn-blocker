@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
-# Literal FROM (not an ARG) so Dependabot can keep the digest current
+# Literal FROM (not an ARG) so Renovate can keep the digest current
 FROM python:3.15-slim@sha256:63bb298d2b7b88f176f51b5189f54ce6535c997682ea70885d2132f5d473a8a5 AS base
 # No user site-packages: nothing written to the data volume can ever be imported as code
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 HOME=/tmp \
     PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 # Debian security fixes that the base image does not carry yet (a no-op once it does)
-RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g libzstd1 \
  && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps
