@@ -3,7 +3,7 @@
   "extends": ["config:recommended"],
   "automerge": true,
   "automergeType": "pr",
-  "automergeStrategy": "merge",
+  "automergeStrategy": "merge-commit",
   "platformAutomerge": false,
   "pip-compile": {
     "managerFilePatterns": ["/(^|/)requirements\\.txt$/"]
