@@ -120,10 +120,11 @@ def change_password(body: Password, user: str = Depends(require_user)):
     with auth.hashing_slot():
         key = auth.attempt(f"account:{user}")
         ok = auth.verify_password(body.current, db.get("local_password_hash"))
+        new_hash = auth.hash_password(body.new) if ok else None  # in the slot too: 32 MiB like every other hash
     if not ok:
         raise HTTPException(400, "Current password is wrong")
     auth.forgive(key)
-    db.put("local_password_hash", auth.hash_password(body.new))
+    db.put("local_password_hash", new_hash)
     auth.drop_all_sessions()
     db.audit(user, "account.password")
     return {"ok": True}

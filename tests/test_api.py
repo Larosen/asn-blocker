@@ -630,3 +630,11 @@ def test_automatic_rules_setting(client):
     r = client.put("/api/attackers/auto", headers=H, json={"mode": "captcha", "days": 90})
     assert r.status_code == 200 and r.json() == {"ok": True, "added": 0}
     assert client.get("/api/attackers").json()["auto"] == {"mode": "captcha", "days": 90}
+
+
+def test_long_multibyte_password_still_verifies():
+    """The form allows 1024 characters; in UTF-8 that can be up to 4 KB. Hashing and checking must use the same bytes."""
+    from app import auth
+    pw = "ä" * 1024
+    stored = auth.hash_password(pw)
+    assert auth.verify_password(pw, stored) and not auth.verify_password(pw[:-1], stored)

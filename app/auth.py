@@ -63,7 +63,7 @@ def verify_password(pw: str, stored: str | None) -> bool:
     """Constant work: always runs scrypt (against a dummy hash if nothing is stored). Call inside hashing_slot()."""
     try:
         _, salt, h = (stored or _DUMMY).split("$")
-        calc = hashlib.scrypt(pw.encode()[:MAX_PASSWORD], salt=bytes.fromhex(salt), n=2**15, r=8, p=1,
+        calc = hashlib.scrypt(pw.encode(), salt=bytes.fromhex(salt), n=2**15, r=8, p=1,
                               maxmem=64 * 2**20)
         return hmac.compare_digest(calc.hex(), h) and bool(stored)
     except ValueError:

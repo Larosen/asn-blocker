@@ -206,7 +206,10 @@ def explain(ip):
         origin = sources.ip_info(str(a)) if a.is_global else {"asns": [], "prefix": ""}
     except sources.SourceError as e:
         origin, problems = {"asns": [], "prefix": ""}, [str(e)]
-    for p in policies.listing(active=True):
+    active = policies.listing(active=True)
+    # an ASN with its own block rule is not taken from the list (evaluate() keeps the rule's action)
+    ruled = {int(p["value"]) for p in active if p["source"] == "asn" and p["effect"] in ("ban", "captcha") and not p["locked"]}
+    for p in active:
         via = None
         try:
             if p["source"] in ("cidr", "ip"):
@@ -219,7 +222,7 @@ def explain(ip):
                 via = _covering(nets, a)
             elif p["source"] == "list":  # the IP's own network is on the list
                 drop = {d["asn"] for d in sources.spamhaus_asndrop()}
-                hit = sorted(set(origin["asns"]) & drop)
+                hit = sorted(set(origin["asns"]) & drop - ruled)
                 via = f"AS{hit[0]} on the list" if hit else None
         except (sources.SourceError, ValueError) as e:
             problems.append(f"{p['source']} {p['value']}: {e}")

@@ -1,5 +1,6 @@
 """Self-protection: IPs that are never blocked, and ASNs that are never blocked ('exempt') or at most get a
 captcha ('captcha') – the locked policies."""
+from .. import db
 from . import policies
 
 ASN_MODES = ("exempt", "captcha")  # never blocked | at most behind a captcha (never banned)
@@ -25,8 +26,9 @@ def asns(mode=None):
 
 def add(kind, value, note="", mode="exempt"):
     effect = _EFFECT[mode] if kind == "asn" else "allow"
-    policies.delete(kind, value, locked=True)  # one protection per IP or ASN, whichever mode
-    policies.upsert([{"source": kind, "value": value, "effect": effect, "locked": True, "note": note}])
+    with db.tx() as c:  # one transaction: the IP or ASN is never left without protection in between
+        policies.delete(kind, value, locked=True, c=c)  # one protection per IP or ASN, whichever mode
+        policies.upsert([{"source": kind, "value": value, "effect": effect, "locked": True, "note": note}], c)
 
 
 def set_mode(asn, mode):
@@ -36,8 +38,10 @@ def set_mode(asn, mode):
     if not current:
         return False
     if current[0]["effect"] != _EFFECT[mode]:
-        policies.delete("asn", str(asn), locked=True)
-        policies.upsert([{"source": "asn", "value": str(asn), "effect": _EFFECT[mode], "locked": True, "note": current[0]["note"]}])
+        with db.tx() as c:
+            policies.delete("asn", str(asn), locked=True, c=c)
+            policies.upsert([{"source": "asn", "value": str(asn), "effect": _EFFECT[mode], "locked": True,
+                              "note": current[0]["note"]}], c)
     return True
 
 
